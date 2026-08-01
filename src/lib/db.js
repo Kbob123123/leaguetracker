@@ -30,6 +30,23 @@ CREATE TABLE IF NOT EXISTS snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_snapshots_channel_ts
   ON snapshots (channel_id, ts);
+
+CREATE TABLE IF NOT EXISTS player_rankings (
+  user_id      TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  points       INTEGER NOT NULL,
+  league_id    TEXT NOT NULL,
+  league_name  TEXT NOT NULL,
+  league_rank  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_rankings_points
+  ON player_rankings (points DESC);
+
+CREATE TABLE IF NOT EXISTS rankings_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `);
 
 /** Insert a new tracked channel. Throws if channel_id already exists (caller should check first). */
@@ -129,4 +146,56 @@ export function getFirstSnapshot(channelId) {
 export function pruneOldSnapshots(channelId, keepSeconds = 26 * 3600) {
   const cutoff = Math.floor(Date.now() / 1000) - keepSeconds;
   db.prepare(`DELETE FROM snapshots WHERE channel_id = ? AND ts < ?`).run(channelId, cutoff);
+}
+
+/**
+ * Replace the entire player_rankings table with a fresh set of rows in one
+ * transaction. Used by the hourly top-N-leagues ranking rebuild — the table
+ * always reflects the single most recent full pass, not an accumulating history.
+ */
+export function replacePlayerRankings(rows) {
+  const deleteAll = db.prepare(`DELETE FROM player_rankings`);
+  const insert = db.prepare(`
+    INSERT INTO player_rankings (user_id, display_name, points, league_id, league_name, league_rank)
+    VALUES (@userId, @displayName, @points, @leagueId, @leagueName, @leagueRank)
+  `);
+
+  db.exec('BEGIN');
+  try {
+    deleteAll.run();
+    for (const row of rows) {
+      insert.run(row);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Look up a player's global rank (within the tracked top-N leagues) by Roblox user ID. */
+export function getPlayerRanking(userId) {
+  const row = db.prepare(`SELECT * FROM player_rankings WHERE user_id = ?`).get(String(userId));
+  if (!row) return null;
+
+  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings WHERE points > ?`).get(row.points);
+  return { ...row, globalRank: count + 1 };
+}
+
+/** Total number of players currently in the rankings table. */
+export function getPlayerRankingsCount() {
+  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings`).get();
+  return count;
+}
+
+export function setRankingsMeta(key, value) {
+  db.prepare(`INSERT INTO rankings_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
+    key,
+    String(value)
+  );
+}
+
+export function getRankingsMeta(key) {
+  const row = db.prepare(`SELECT value FROM rankings_meta WHERE key = ?`).get(key);
+  return row ? row.value : null;
 }

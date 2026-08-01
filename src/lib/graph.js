@@ -1,4 +1,9 @@
 import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FONT_DIR = path.join(__dirname, '..', '..', 'assets', 'fonts');
 
 const width = 900;
 const height = 500;
@@ -7,7 +12,17 @@ const chartCanvas = new ChartJSNodeCanvas({
   width,
   height,
   backgroundColour: '#2b2d31', // Discord dark theme background
+  // Minimal Linux containers (like Railway's Nixpacks build) often ship with
+  // no fonts installed at all, which makes chart text render as empty boxes.
+  // Bundling a font in the repo and registering it here guarantees it's
+  // always available regardless of the host OS.
+  chartCallback: (ChartJS) => {
+    ChartJS.defaults.font.family = 'DejaVu Sans';
+  },
 });
+
+chartCanvas.registerFont(path.join(FONT_DIR, 'DejaVuSans.ttf'), { family: 'DejaVu Sans', weight: 'normal' });
+chartCanvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: 'DejaVu Sans', weight: 'bold' });
 
 const MEMBER_COLORS = ['#5865F2', '#57F287', '#FEE75C', '#ED4245', '#EB459E'];
 
@@ -63,20 +78,21 @@ export async function renderMemberGraph(snapshots, leagueName) {
           display: true,
           text: `${leagueName} — Member Points`,
           color: '#f2f3f5',
-          font: { size: 18 },
+          font: { size: 18, family: 'DejaVu Sans' },
         },
         legend: {
-          labels: { color: '#f2f3f5' },
+          labels: { color: '#f2f3f5', font: { family: 'DejaVu Sans' } },
         },
       },
       scales: {
         x: {
-          ticks: { color: '#b5bac1' },
+          ticks: { color: '#b5bac1', font: { family: 'DejaVu Sans' } },
           grid: { color: '#3f4147' },
         },
         y: {
           ticks: {
             color: '#b5bac1',
+            font: { family: 'DejaVu Sans' },
             callback: (value) => Number(value).toLocaleString(),
           },
           grid: { color: '#3f4147' },

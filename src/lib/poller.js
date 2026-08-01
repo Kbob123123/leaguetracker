@@ -1,5 +1,5 @@
 import { AttachmentBuilder } from 'discord.js';
-import { getLeagueDetail, findLeagueNeighbors } from './ps99Api.js';
+import { getLeagueDetail, findLeagueNeighbors, getLeagueAtRank } from './ps99Api.js';
 import {
   getAllTrackedChannels,
   addSnapshot,
@@ -16,6 +16,7 @@ import { resolveDisplayNames } from './robloxNames.js';
 
 const HOUR_SECONDS = 3600;
 const GRAPH_WINDOW_SECONDS = 24 * HOUR_SECONDS;
+const MILESTONE_RANKS = [100, 50, 10];
 
 /**
  * Poll every tracked channel once. Safe to call on an interval; each channel's
@@ -52,6 +53,10 @@ async function pollOneChannel(client, trackedRow) {
 
   const neighbors = await findLeagueNeighbors(league);
 
+  // Only fetch milestones the league hasn't already passed — no point checking
+  // "distance to top 100" for a league that's already rank 5.
+  const milestones = await fetchMilestones(neighbors);
+
   const currentMembers = await resolveDisplayNames(buildMemberPointsList(league));
 
   addSnapshot({
@@ -62,6 +67,7 @@ async function pollOneChannel(client, trackedRow) {
     neighbors: {
       ahead: neighbors.ahead ? { ID: neighbors.ahead.ID, Points: neighbors.ahead.Points, Name: neighbors.ahead.Name } : null,
       behind: neighbors.behind ? { ID: neighbors.behind.ID, Points: neighbors.behind.Points, Name: neighbors.behind.Name } : null,
+      milestones,
     },
   });
 
@@ -79,6 +85,7 @@ async function pollOneChannel(client, trackedRow) {
     hourAgoSnapshot: validHourAgo,
     latestSnapshot,
     neighbors,
+    milestones,
     trackingStartedAt: new Date(startedAt * 1000),
   });
 
@@ -94,6 +101,22 @@ async function pollOneChannel(client, trackedRow) {
   }
 
   await postOrEditMessage(client, trackedRow, embed, files);
+}
+
+export async function fetchMilestones(neighbors) {
+  const milestones = {};
+  for (const rank of MILESTONE_RANKS) {
+    if (neighbors.rank != null && neighbors.rank <= rank) continue;
+    try {
+      const milestoneLeague = await getLeagueAtRank(rank);
+      if (milestoneLeague) {
+        milestones[rank] = { ID: milestoneLeague.ID, Points: milestoneLeague.Points, Name: milestoneLeague.Name };
+      }
+    } catch (err) {
+      console.warn(`[poller] Failed to fetch milestone rank ${rank}:`, err.message);
+    }
+  }
+  return milestones;
 }
 
 export function buildMemberPointsList(league) {

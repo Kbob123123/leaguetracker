@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pollAllTrackedChannels } from './lib/poller.js';
+import { rebuildPlayerRankings } from './lib/rankingsJob.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,12 +70,36 @@ async function runPollTick() {
   }
 }
 
+const RANKINGS_INTERVAL_MS = 60 * 60 * 1000; // fixed hourly cadence, independent of POLL_INTERVAL_MINUTES
+let rankingsInFlight = false;
+
+async function runRankingsTick() {
+  if (rankingsInFlight) {
+    console.warn('[rankings] Previous rebuild still running; skipping this tick.');
+    return;
+  }
+  rankingsInFlight = true;
+  try {
+    await rebuildPlayerRankings();
+  } catch (err) {
+    console.error('[rankings] Unexpected top-level error:', err);
+  } finally {
+    rankingsInFlight = false;
+  }
+}
+
 client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}.`);
   console.log(`Polling every ${POLL_INTERVAL_MS / 60000} minute(s).`);
   setInterval(runPollTick, POLL_INTERVAL_MS);
   // Run one tick shortly after startup too, so restarts don't wait a full interval.
   setTimeout(runPollTick, 15_000);
+
+  console.log(`Rebuilding player rankings every ${RANKINGS_INTERVAL_MS / 3600000} hour(s).`);
+  setInterval(runRankingsTick, RANKINGS_INTERVAL_MS);
+  // Stagger the first rankings pass a bit after startup so it doesn't collide
+  // with the first tracked-league poll tick above.
+  setTimeout(runRankingsTick, 60_000);
 });
 
 client.login(process.env.DISCORD_TOKEN);

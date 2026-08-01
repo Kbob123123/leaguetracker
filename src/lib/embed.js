@@ -13,9 +13,10 @@ const COLOR_LOSING = 0xed4245; // red — falling behind the league ahead
  * @param {object|null} params.hourAgoSnapshot  Snapshot row from ~1h ago, or null if not enough history yet
  * @param {object} params.latestSnapshot        The snapshot we just took (for member points now)
  * @param {object} params.neighbors    { rank, total, ahead, behind } from findLeagueNeighbors (current points)
+ * @param {object} params.milestones  { [rank]: { ID, Points, Name } } for milestone ranks not yet passed
  * @param {Date} params.trackingStartedAt
  */
-export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, trackingStartedAt }) {
+export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt }) {
   const now = latestSnapshot.ts;
   const currentPoints = league.Points;
 
@@ -103,6 +104,32 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     embed.addFields({ name: '⬇️ Behind', value: '🔚 Last place — no one behind.', inline: true });
   }
 
+  // --- Milestones: distance to top 100 / 50 / 10 ---
+  if (milestones && Object.keys(milestones).length > 0) {
+    const hourAgoMilestones = hourAgoNeighbors?.milestones || {};
+    const milestoneLines = Object.entries(milestones)
+      .sort(([a], [b]) => Number(b) - Number(a)) // furthest milestone first (100, then 50, then 10)
+      .map(([rank, target]) => {
+        const prev = hourAgoMilestones[rank];
+        const targetRate =
+          prev && prev.ID === target.ID && hourAgoSnapshot ? hourlyRate(prev.Points, hourAgoSnapshot.ts, target.Points, now) : null;
+        const line = buildOvertakeLine({
+          chaserPoints: currentPoints,
+          chaserRate: leagueRate,
+          targetPoints: target.Points,
+          targetRate,
+          directionLabel: `reach top ${rank}`,
+        });
+        return `**Top ${rank}** (${target.Name}): ${line.replace('\n', ' — ')}`;
+      });
+
+    embed.addFields({
+      name: '🎯 Milestones',
+      value: milestoneLines.join('\n'),
+      inline: false,
+    });
+  }
+
   embed.addFields({ name: '\u200b', value: '\u200b', inline: false }); // full-width spacer before members
 
   // --- Members ---
@@ -129,9 +156,18 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     inline: false,
   });
 
+  const pollIntervalMinutes = Number(process.env.POLL_INTERVAL_MINUTES) || 10;
+  const nextUpdateUnix = now + pollIntervalMinutes * 60;
+
+  embed.addFields({
+    name: '⏱️ Next Update',
+    value: `<t:${nextUpdateUnix}:R>`,
+    inline: true,
+  });
+
   embed.setFooter({
     text: hourAgoSnapshot
-      ? 'Updates every 10 minutes'
+      ? `Updates every ${pollIntervalMinutes} minutes`
       : 'Tracking started — hourly rates appear once an hour of data has been collected',
   });
 

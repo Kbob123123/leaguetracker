@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } from 'discord.js';
 import { getLeagueDetail, findLeagueNeighbors } from '../lib/ps99Api.js';
 import { addTrackedChannel, getTrackedChannel, addSnapshot } from '../lib/db.js';
-import { buildMemberPointsList } from '../lib/poller.js';
+import { buildMemberPointsList, fetchMilestones } from '../lib/poller.js';
 import { resolveDisplayNames } from '../lib/robloxNames.js';
 
 export const data = new SlashCommandBuilder()
@@ -40,9 +40,8 @@ export async function execute(interaction) {
     return;
   }
 
-  // Take the first snapshot immediately so the graph/history has a starting point,
-  // and confirm the neighbor lookup works before we commit to tracking.
   const neighbors = await findLeagueNeighbors(league);
+  const milestones = await fetchMilestones(neighbors);
 
   const members = await resolveDisplayNames(buildMemberPointsList(league));
 
@@ -64,6 +63,7 @@ export async function execute(interaction) {
       behind: neighbors.behind
         ? { ID: neighbors.behind.ID, Points: neighbors.behind.Points, Name: neighbors.behind.Name }
         : null,
+      milestones,
     },
   });
 

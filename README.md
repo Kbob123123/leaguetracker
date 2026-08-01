@@ -31,9 +31,36 @@ has passed, the bot shows "collecting data" instead of a rate.
 | `/stopmonitoringleague [channel:#channel]` | Stop tracking and clear that channel's history. Requires "Manage Server" permission. |
 | `/listmonitoredleagues` | List every league currently tracked in the server. |
 | `/leagueinfo league:<name>` | One-off lookup — current rank, points, and members, no tracking started. |
+| `/leagueplayersearch player:<name>` | Search for a player by username/display name. Shows their global rank among the top-500-leagues player pool (if they're in one), and whether they're in a league currently tracked in this server. |
 
 You can track **multiple leagues at once**, one per channel — run
 `/startmonitoringleague` in as many channels as you like.
+
+Each tracked embed also shows, once an hour of history exists:
+- 🎯 **Milestones** — ETA to reach top 100 / top 50 / top 10 (only shown for
+  ranks the league hasn't already passed)
+- ⏱️ **Next Update** — a live Discord relative-timestamp counting down to the
+  next 10-minute refresh
+
+## Global player rankings
+
+Separately from the 10-minute tracked-league poller, a background job runs
+**once an hour** and rebuilds a leaderboard of individual players across the
+**top 500 leagues** (by league Points). This powers the global-rank portion
+of `/leagueplayersearch`.
+
+Why top 500 and not every league: the PS99 API only returns individual member
+contributions from the *per-league detail endpoint* — there's no bulk
+endpoint for it. Pulling all ~90,000+ leagues would mean tens of thousands of
+API calls and multiple hours per rebuild. Restricting to the top 500 keeps a
+full rebuild to about 500 calls (a couple of minutes, with a small delay
+between requests to stay easy on the PS99 API), at the cost of only covering
+players in genuinely competitive leagues — if someone's league is outside the
+top 500, they won't show up in the global-rank lookup.
+
+The rankings table is fully replaced on each rebuild (not accumulated), so it
+always reflects a single consistent snapshot rather than a mix of old and new
+data.
 
 ## Local setup
 
@@ -100,6 +127,17 @@ hourly rates again after each restart.
   name, caching results for 6 hours so it doesn't re-resolve names every poll.
   If that lookup also fails, the numeric ID is shown as a last resort rather
   than blocking the update.
+- The graph bundles its own font (`assets/fonts/DejaVuSans*.ttf`) and
+  registers it explicitly with Chart.js. This matters because minimal Linux
+  containers (like Railway's build image) often ship with **no fonts
+  installed at all** — without a bundled font, chart text renders as empty
+  boxes. Don't delete the `assets/fonts` folder.
+- `/leagueplayersearch`'s global rank only covers players in the **top 500
+  leagues** (refreshed hourly) — it can't tell you a rank for players in
+  smaller/lower leagues, since the PS99 API has no bulk endpoint for
+  individual player stats and pulling every league would take hours per
+  rebuild. The server-specific "is this player in a league we're tracking"
+  check has no such limit and works for any tracked league regardless of rank.
 - The graph keeps the last 24 hours of snapshots per channel; older rows are
   pruned automatically on each poll to keep the database small.
 - If a tracked league is renamed, disbanded, or otherwise disappears from the

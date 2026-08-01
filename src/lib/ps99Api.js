@@ -107,4 +107,29 @@ export async function findLeagueNeighbors(league) {
   return { rank, total, ahead, behind };
 }
 
+/**
+ * Search PS99 players by username/display-name prefix (min 2 chars).
+ * Returns [] for short queries or no matches — never throws for "no results".
+ */
+export async function searchPlayers(query, limit = 10) {
+  if (!query || query.trim().length < 2) return [];
+  const data = await get(`/v1/players/search?q=${encodeURIComponent(query.trim())}&limit=${limit}`);
+  return data.results || [];
+}
+
+/**
+ * Fetch the league currently occupying an exact rank (1-based) on the Points
+ * leaderboard. Used for "distance to rank 100/50/10" milestone tracking.
+ * Returns null if the rank doesn't exist (e.g. asking for rank 10 when only
+ * 5 leagues exist).
+ */
+export async function getLeagueAtRank(rank) {
+  if (rank < 1) return null;
+  const pageSize = 100;
+  const page = Math.ceil(rank / pageSize);
+  const data = await getLeaguesPage(page, pageSize);
+  const indexOnPage = rank - (page - 1) * pageSize - 1;
+  return data.leagues[indexOnPage] ?? null;
+}
+
 export { Ps99ApiError };
