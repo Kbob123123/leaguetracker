@@ -47,6 +47,22 @@ CREATE TABLE IF NOT EXISTS rankings_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- One row per (channel, target_key). target_key is 'ahead', 'top100', 'top50',
+-- or 'top10'. target_points is snapshotted ONCE when the target is (re)locked
+-- and never changes until beaten — this is what makes ETAs stable even when
+-- the league that originally held that points value moves around or gets
+-- overtaken by someone else in the meantime. Only the tracked league's own
+-- rate affects the ETA against a locked target.
+CREATE TABLE IF NOT EXISTS locked_targets (
+  channel_id     TEXT NOT NULL,
+  target_key     TEXT NOT NULL,
+  target_league_id   TEXT,
+  target_league_name TEXT,
+  target_points  INTEGER NOT NULL,
+  locked_at      INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, target_key)
+);
 `);
 
 /** Insert a new tracked channel. Throws if channel_id already exists (caller should check first). */
@@ -61,6 +77,7 @@ export function addTrackedChannel({ channelId, guildId, leagueName }) {
 export function removeTrackedChannel(channelId) {
   db.prepare(`DELETE FROM tracked_channels WHERE channel_id = ?`).run(channelId);
   db.prepare(`DELETE FROM snapshots WHERE channel_id = ?`).run(channelId);
+  db.prepare(`DELETE FROM locked_targets WHERE channel_id = ?`).run(channelId);
 }
 
 export function getTrackedChannel(channelId) {
@@ -198,4 +215,37 @@ export function setRankingsMeta(key, value) {
 export function getRankingsMeta(key) {
   const row = db.prepare(`SELECT value FROM rankings_meta WHERE key = ?`).get(key);
   return row ? row.value : null;
+}
+
+/** Get the currently locked target for a channel/key ('ahead', 'top100', 'top50', 'top10'), or null if never locked. */
+export function getLockedTarget(channelId, targetKey) {
+  return db.prepare(`SELECT * FROM locked_targets WHERE channel_id = ? AND target_key = ?`).get(channelId, targetKey);
+}
+
+export function getAllLockedTargets(channelId) {
+  return db.prepare(`SELECT * FROM locked_targets WHERE channel_id = ?`).all(channelId);
+}
+
+/**
+ * Lock (or re-lock, after being beaten) a target's points threshold. This is
+ * the only place target_points is written — every poll after this reads it
+ * back unchanged until the tracked league's points reach/exceed it.
+ */
+export function setLockedTarget(channelId, targetKey, { leagueId, leagueName, points }) {
+  db.prepare(`
+    INSERT INTO locked_targets (channel_id, target_key, target_league_id, target_league_name, target_points, locked_at)
+    VALUES (@channelId, @targetKey, @leagueId, @leagueName, @points, @lockedAt)
+    ON CONFLICT(channel_id, target_key) DO UPDATE SET
+      target_league_id = excluded.target_league_id,
+      target_league_name = excluded.target_league_name,
+      target_points = excluded.target_points,
+      locked_at = excluded.locked_at
+  `).run({
+    channelId,
+    targetKey,
+    leagueId: leagueId ?? null,
+    leagueName: leagueName ?? null,
+    points,
+    lockedAt: Math.floor(Date.now() / 1000),
+  });
 }

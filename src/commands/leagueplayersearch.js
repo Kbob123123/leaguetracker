@@ -2,6 +2,7 @@ import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { searchPlayers } from '../lib/ps99Api.js';
 import { getAllTrackedChannels, getLatestSnapshot, getPlayerRanking, getPlayerRankingsCount, getRankingsMeta } from '../lib/db.js';
 import { formatPoints } from '../lib/rates.js';
+import { TOP_LEAGUES_COUNT } from '../lib/rankingsJob.js';
 
 export const data = new SlashCommandBuilder()
   .setName('leagueplayersearch')
@@ -25,8 +26,8 @@ export async function execute(interaction) {
 
   if (matches.length === 0) {
     await interaction.editReply(
-      `❌ No players found matching **${query}**. Player search requires at least 2 characters and only ` +
-        `finds players who've made their PS99 profile public.`
+      `❌ No players found matching **${query}**. Double check the spelling — this searches by ` +
+        `Roblox username/display name and needs at least 2 characters.`
     );
     return;
   }
@@ -47,7 +48,7 @@ export async function execute(interaction) {
     const name = player.displayName || player.username;
     const parts = [`**${name}** (@${player.username})`];
 
-    // Global rank within the top-500-leagues player pool.
+    // Global rank within the top-N-leagues player pool (N = TOP_LEAGUES_COUNT).
     const ranking = getPlayerRanking(player.robloxUserId);
     if (ranking) {
       parts.push(
@@ -55,7 +56,7 @@ export async function execute(interaction) {
           `— ${formatPoints(ranking.points)} pts, in **${ranking.league_name}** (league rank #${ranking.league_rank})`
       );
     } else if (totalRanked > 0) {
-      parts.push(`└ 🌍 Not currently in a top-500 league (or hasn't contributed points there).`);
+      parts.push(`└ 🌍 Not currently in a top-${TOP_LEAGUES_COUNT} league (or hasn't contributed points there).`);
     }
 
     // Whether they're in a league this specific Discord server is tracking.
@@ -87,7 +88,7 @@ export async function execute(interaction) {
   if (totalRanked > 0 && lastRebuiltAt) {
     const minutesAgo = Math.round((Date.now() / 1000 - Number(lastRebuiltAt)) / 60);
     const ageText = minutesAgo < 60 ? `${minutesAgo}m ago` : `${Math.round(minutesAgo / 60)}h ago`;
-    footerParts.push(`Global ranking covers top 500 leagues, last refreshed ${ageText}`);
+    footerParts.push(`Global ranking covers top ${TOP_LEAGUES_COUNT} leagues, last refreshed ${ageText}`);
   } else {
     footerParts.push('Global ranking is still building — check back in a bit');
   }

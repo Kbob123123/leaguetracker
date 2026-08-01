@@ -108,12 +108,14 @@ export async function findLeagueNeighbors(league) {
 }
 
 /**
- * Search PS99 players by username/display-name prefix (min 2 chars).
- * Returns [] for short queries or no matches — never throws for "no results".
+ * Search PS99 players by username/display-name (min 2 chars).
+ * Returns [] for short queries or genuinely zero matches. Throws Ps99ApiError
+ * for anything else (bad request, rate limit, API outage) so callers can show
+ * an accurate message instead of a generic "not found."
  */
 export async function searchPlayers(query, limit = 10) {
   if (!query || query.trim().length < 2) return [];
-  const data = await get(`/v1/players/search?q=${encodeURIComponent(query.trim())}&limit=${limit}`);
+  const data = await get(`/v1/players?query=${encodeURIComponent(query.trim())}&limit=${limit}`);
   return data.results || [];
 }
 

@@ -8,11 +8,11 @@ import { resolveDisplayNames } from './robloxNames.js';
 // to the top N keeps a full rebuild to a couple hundred calls and a few
 // minutes, at the cost of only covering players in genuinely competitive
 // leagues rather than the entire playerbase.
-const TOP_LEAGUES_COUNT = 500;
+export const TOP_LEAGUES_COUNT = 1000;
 const LEAGUE_PAGE_SIZE = 100;
 
 // Small delay between detail calls so we don't hammer the PS99 API with a
-// burst of ~500 requests all at once.
+// burst of ~1000 requests all at once.
 const REQUEST_DELAY_MS = 150;
 
 function sleep(ms) {
