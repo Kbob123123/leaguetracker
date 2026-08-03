@@ -31,7 +31,7 @@ has passed, the bot shows "collecting data" instead of a rate.
 | `/stopmonitoringleague [channel:#channel]` | Stop tracking and clear that channel's history. Requires "Manage Server" permission. |
 | `/listmonitoredleagues` | List every league currently tracked in the server. |
 | `/leagueinfo league:<name>` | One-off lookup — current rank, points, and members, no tracking started. |
-| `/leagueplayersearch player:<name>` | Search for a player by username/display name. Shows their global rank among the top-500-leagues player pool (if they're in one), and whether they're in a league currently tracked in this server. |
+| `/playerinfo player:<name>` | Look up a member of any league tracked in this server by (partial) display name — shows points, hourly rate, in-league rank, and global rank if they're in a top-1,000 league. |
 
 You can track **multiple leagues at once**, one per channel — run
 `/startmonitoringleague` in as many channels as you like.
@@ -81,7 +81,7 @@ Two honest limitations worth knowing:
 Separately from the 10-minute tracked-league poller, a background job runs
 **once an hour** and rebuilds a leaderboard of individual players across the
 **top 1,000 leagues** (by league Points). This powers the global-rank portion
-of `/leagueplayersearch`.
+of `/playerinfo`.
 
 The same hourly pass also records each of those 1,000 leagues' current points
 into a small history table — at no extra API cost, since it reuses data the
@@ -174,20 +174,21 @@ hourly rates again after each restart.
   containers (like Railway's build image) often ship with **no fonts
   installed at all** — without a bundled font, chart text renders as empty
   boxes. Don't delete the `assets/fonts` folder.
-- `/leagueplayersearch`'s global rank only covers players in the **top 1,000
-  leagues** (refreshed hourly) — it can't tell you a rank for players in
+- `/playerinfo` only searches **members of leagues currently tracked in this
+  server** — it doesn't call any external "search for a player by name"
+  endpoint. An earlier version tried that (a `/leagueplayersearch` command
+  hitting a guessed `/v1/players?query=` endpoint) and it turned out to be
+  broken — the PS99 API rejected the request rather than returning results.
+  Rather than keep guessing at an unverified endpoint, `/playerinfo` was
+  rebuilt to only use data the bot already reliably has: the member rosters
+  from its own tracked-league polling. This is strictly more reliable (no
+  external search dependency at all) at the cost of only covering players in
+  leagues someone has actually run `/startmonitoringleague` on in that server.
+- `/playerinfo`'s global rank field only covers players in the **top 1,000
+  leagues** (refreshed hourly) — it can't show a global rank for players in
   smaller/lower leagues, since the PS99 API has no bulk endpoint for
   individual player stats and pulling every league would take hours per
-  rebuild. The server-specific "is this player in a league we're tracking"
-  check has no such limit and works for any tracked league regardless of rank.
-- The player **name search itself** (`searchPlayers` in `ps99Api.js`) is
-  implemented against `GET /v1/players?query=`, based on the best available
-  reading of the PS99 API docs, but hasn't been confirmed against a live
-  response. If `/leagueplayersearch` returns "no players found" for a name
-  you know exists, hit `https://ps99.biggamesapi.io/v1/players?query=<name>`
-  directly in a browser — if the JSON shape differs from what's expected,
-  update the query param name / response parsing in `searchPlayers()`
-  accordingly.
+  rebuild.
 - The graph keeps the last 24 hours of snapshots per channel; older rows are
   pruned automatically on each poll to keep the database small.
 - If a tracked league is renamed, disbanded, or otherwise disappears from the
@@ -196,15 +197,35 @@ hourly rates again after each restart.
 - Overtake ETAs assume both leagues keep their current trailing-hour rate
   constant — they're an estimate, not a guarantee, since rates naturally
   fluctuate.
-- **Not yet built: projected final placement at battle/season end.** The PS99
-  API likely has a way to get the current battle's timing (`v1/clans` battle
-  detail, and a legacy `/api/activeClanBattle` endpoint), which could power a
-  "projected rank when the battle ends" feature using the same rate math
-  described above. This wasn't built yet because the legacy endpoint has
-  documented reliability problems (reports of it lagging hours to over a day
-  behind the actual battle state — see PS99 API docs issue #95), and the
-  exact field shape of the newer `v1/clans` battle-detail endpoint hasn't
-  been confirmed. Building this on unverified or stale end-date data risked
-  showing a confidently wrong projection, which seemed worse than not having
-  the feature. Worth revisiting once the exact endpoint/fields can be
-  confirmed against a live response.
+- **Battle end projection (🏁 Projected at Battle End).** Every tracked embed
+  shows the league's projected points if its current hourly rate holds until
+  the battle ends, plus a countdown. This is anchored to a fixed weekly
+  moment — **Saturday 2am AEST** — hardcoded in `src/lib/battleTimer.js`
+  rather than pulled from an API, since the API's battle-timing endpoints
+  turned out to have real reliability problems (see below). AEST is fixed at
+  UTC+10 with no daylight-saving adjustment needed, which keeps the math
+  simple and exact.
+
+  Two things this deliberately does NOT try to do, because the underlying
+  data isn't reliable enough to back them:
+  - **It doesn't know if a battle even exists next week**, or what type
+    (clan vs. league) — battle scheduling depends on game updates and isn't
+    predictable in advance. The countdown always points to the next
+    Saturday-2am-AEST moment regardless.
+  - **It doesn't project a full rank forecast** — only points. A true rank
+    projection would need every nearby league's own rate projected forward
+    too, compounding several independent, fluctuating estimates into one
+    number that would look precise but likely wouldn't be. Instead, it does
+    one honest, limited sanity check: whether the projected points would
+    currently be enough to beat the immediate "ahead" neighbor's points
+    *right now* — clearly caveated that they'll likely have grown too by
+    battle end.
+
+  Why not pull the end-date from the API instead of hardcoding it: the PS99
+  API has a couple of candidates (`v1/clans` battle detail, and a legacy
+  `/api/activeClanBattle` endpoint), but the legacy one has documented
+  reliability problems (reports of it lagging hours to over a day behind the
+  real battle state — see PS99 API docs issue #95), and the exact field
+  shape of the newer `v1/clans` battle-detail endpoint was never confirmed
+  against a live response. A fixed weekly anchor, confirmed directly, is more
+  reliable than either.

@@ -1,5 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
+import { hoursUntilBattleEnd, projectPointsAtBattleEnd } from './battleTimer.js';
 
 const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
 const COLOR_NEUTRAL = 0x5865f2; // discord blurple — steady / no clear trend yet
@@ -120,6 +121,38 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
         inline: false,
       });
     }
+  }
+
+  // --- Battle end projection: where your points would land if your current
+  // rate holds until Saturday 2am AEST. Clearly labeled as a projection, not
+  // a promise — rates fluctuate and this can't account for other leagues
+  // changing their own pace between now and then. Also includes a simple
+  // sanity check against the immediate neighbor's CURRENT points (not a full
+  // rank forecast, since that would need every nearby league's own rate
+  // projected too — too much compounded guesswork to present as reliable). ---
+  if (leagueRate != null) {
+    const hoursLeft = hoursUntilBattleEnd(new Date(now * 1000));
+    const projectedPoints = projectPointsAtBattleEnd(currentPoints, leagueRate, new Date(now * 1000));
+
+    const lines = [
+      `~${formatPoints(projectedPoints)} pts if this rate holds`,
+      `Battle ends in **${formatDuration(hoursLeft)}** (Sat 2am AEST)`,
+    ];
+
+    if (neighbors.ahead) {
+      const wouldPass = projectedPoints >= neighbors.ahead.Points;
+      lines.push(
+        wouldPass
+          ? `✅ Enough to currently be ahead of **${neighbors.ahead.Name}** (${formatPoints(neighbors.ahead.Points)} pts now — they'll likely have more by then)`
+          : `Still short of **${neighbors.ahead.Name}**'s current ${formatPoints(neighbors.ahead.Points)} pts`
+      );
+    }
+
+    embed.addFields({
+      name: '🏁 Projected at Battle End',
+      value: lines.join('\n'),
+      inline: false,
+    });
   }
 
   embed.addFields({ name: '\u200b', value: '\u200b', inline: false }); // full-width spacer before members
