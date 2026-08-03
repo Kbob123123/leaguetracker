@@ -1,42 +1,38 @@
 import { EmbedBuilder } from 'discord.js';
-import { hourlyRate, formatDuration, formatRate, formatPoints } from './rates.js';
+import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
 
-const COLOR_GAINING = 0x57f287; // green — closing the gap on the locked target ahead
+const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
 const COLOR_NEUTRAL = 0x5865f2; // discord blurple — steady / no clear trend yet
-const COLOR_LOSING = 0xed4245; // red — falling behind the locked target ahead
+const COLOR_LOSING = 0xed4245; // red — falling behind the league ahead
 
 const MILESTONE_ORDER = [100, 50, 10];
 
 /**
  * Build the status embed for a tracked league.
  *
- * Targets (the league ahead, the league behind, and milestones) are all
- * "locked" — their points threshold is fixed at the moment they're first
- * seen (or re-locked after being beaten) and does NOT move just because some
- * other league shuffles position underneath it. Only the tracked league's own
- * point rate moves the ETA. See poller.js's resolveLockedTarget /
- * resolveBehindTarget for where locking happens.
+ * Ahead/behind/milestone targets are always LIVE — whoever currently holds
+ * that rank/position, read fresh every poll, with no locking or re-lock delay.
+ *
+ * ETA math is two-body when possible: both the tracked league's rate AND the
+ * target's own rate are used (target.Rate, populated in poller.js from the
+ * hourly top-N rankings job — see rankingsJob.js / league_points_history).
+ * This matters because a target that's ALSO gaining points isn't standing
+ * still — treating it as static would understate how long it actually takes
+ * to catch up, or wrongly claim you're catching up when the target is
+ * pulling away faster than you're gaining. If a target's rate isn't
+ * available (outside the top-N leagues the rankings job covers), the bot
+ * falls back to a one-sided estimate and says so explicitly, rather than
+ * quietly guessing.
  *
  * @param {object} params
  * @param {object} params.league       Current /v1/leagues/:name detail (Name, Points, Members, Owner, ...)
  * @param {object|null} params.hourAgoSnapshot  Snapshot row from ~1h ago, or null if not enough history yet
  * @param {object} params.latestSnapshot        The snapshot we just took (for member points now)
- * @param {object} params.neighbors    { rank, total } from findLeagueNeighbors (rank/total are always live)
- * @param {object|null} params.aheadTarget   Locked target row for 'ahead', or null if rank 1
- * @param {object|null} params.behindTarget  Locked target row for 'behind', or null if last place
- * @param {object} params.lockedMilestones   { [rank]: lockedTargetRow } for ranks not yet passed
+ * @param {object} params.neighbors    { rank, total, ahead, behind } from findLeagueNeighbors, each with an added .Rate
+ * @param {object} params.milestones   { [rank]: { ID, Points, Name, Rate } } for milestone ranks not yet passed
  * @param {Date} params.trackingStartedAt
  */
-export function buildLeagueEmbed({
-  league,
-  hourAgoSnapshot,
-  latestSnapshot,
-  neighbors,
-  aheadTarget,
-  behindTarget,
-  lockedMilestones,
-  trackingStartedAt,
-}) {
+export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt }) {
   const now = latestSnapshot.ts;
   const currentPoints = league.Points;
 
@@ -44,12 +40,14 @@ export function buildLeagueEmbed({
     ? hourlyRate(hourAgoSnapshot.points, hourAgoSnapshot.ts, currentPoints, now)
     : null;
 
-  const aheadEta = aheadTarget ? etaToFixedTarget(currentPoints, leagueRate, aheadTarget.target_points) : null;
+  const aheadResult = neighbors.ahead
+    ? computeOvertake(currentPoints, leagueRate, neighbors.ahead.Points, neighbors.ahead.Rate)
+    : null;
 
   const embed = new EmbedBuilder()
     .setTitle(`${rankBadge(neighbors.rank)} ${league.Name}`)
-    .setColor(pickColor(aheadTarget, leagueRate, aheadEta))
-    .setDescription(buildSummaryLine({ neighbors, leagueRate, aheadTarget, aheadEta }))
+    .setColor(pickColor(neighbors.ahead, leagueRate, aheadResult))
+    .setDescription(buildSummaryLine({ neighbors, leagueRate, aheadResult }))
     .setTimestamp(new Date(now * 1000));
 
   if (league.Icon) {
@@ -67,44 +65,52 @@ export function buildLeagueEmbed({
     }
   );
 
-  // --- Locked target ahead: fixed-threshold ETA to overtake ---
-  if (aheadTarget) {
+  // --- League ahead: two-body ETA when we know their rate, one-sided fallback otherwise ---
+  if (neighbors.ahead) {
     embed.addFields({
-      name: `⬆️ Target — ${aheadTarget.target_league_name}${aheadTarget.justLocked ? ' 🔒' : ''}`,
-      value: buildFixedTargetLine({ currentPoints, leagueRate, targetPoints: aheadTarget.target_points, directionLabel: 'catch up' }),
+      name: `⬆️ Ahead — ${neighbors.ahead.Name}`,
+      value: buildTargetLine({
+        currentPoints,
+        leagueRate,
+        targetPoints: neighbors.ahead.Points,
+        targetRate: neighbors.ahead.Rate,
+        directionLabel: 'catch up',
+      }),
       inline: true,
     });
   } else {
     embed.addFields({ name: '⬆️ Ahead', value: '🥇 Already #1!', inline: true });
   }
 
-  // --- Locked target behind: static gap only — we don't track other leagues'
-  // own point rates, so an ETA for them would be a guess. Showing the honest
-  // gap instead of a fabricated countdown. ---
-  if (behindTarget) {
-    const gap = behindTarget.target_points - (behindTarget.chaserPoints ?? 0);
-    const gapText = gap > 0 ? `${formatPoints(gap)} pts to catch you (as of lock)` : 'Very close — may have caught up';
+  // --- League behind: same two-body treatment, just inverted (they're the chaser) ---
+  if (neighbors.behind) {
     embed.addFields({
-      name: `⬇️ Behind — ${behindTarget.target_league_name}${behindTarget.justLocked ? ' 🔒' : ''}`,
-      value: `Needs **${formatPoints(behindTarget.target_points)}** pts to catch the mark you locked at.\n${gapText}`,
+      name: `⬇️ Behind — ${neighbors.behind.Name}`,
+      value: buildTargetLine({
+        currentPoints: neighbors.behind.Points,
+        leagueRate: neighbors.behind.Rate,
+        targetPoints: currentPoints,
+        targetRate: leagueRate,
+        directionLabel: 'catch up to you',
+      }),
       inline: true,
     });
   } else {
     embed.addFields({ name: '⬇️ Behind', value: '🔚 Last place — no one behind.', inline: true });
   }
 
-  // --- Milestones: distance to top 100 / 50 / 10, each a locked fixed target ---
-  if (lockedMilestones && Object.keys(lockedMilestones).length > 0) {
-    const milestoneLines = MILESTONE_ORDER.filter((rank) => lockedMilestones[rank]).map((rank) => {
-      const target = lockedMilestones[rank];
-      const line = buildFixedTargetLine({
+  // --- Milestones: distance to top 100 / 50 / 10, two-body when possible ---
+  if (milestones && Object.keys(milestones).length > 0) {
+    const milestoneLines = MILESTONE_ORDER.filter((rank) => milestones[rank]).map((rank) => {
+      const target = milestones[rank];
+      const line = buildTargetLine({
         currentPoints,
         leagueRate,
-        targetPoints: target.target_points,
+        targetPoints: target.Points,
+        targetRate: target.Rate,
         directionLabel: `reach top ${rank}`,
       });
-      const lockNote = target.justLocked ? ' 🔒' : '';
-      return `**Top ${rank}** (${target.target_league_name}${lockNote}): ${line.replace('\n', ' — ')}`;
+      return `**Top ${rank}** (${target.Name}): ${line.replace('\n', ' — ')}`;
     });
 
     if (milestoneLines.length > 0) {
@@ -153,7 +159,7 @@ export function buildLeagueEmbed({
 
   embed.setFooter({
     text: hourAgoSnapshot
-      ? `Updates every ${pollIntervalMinutes} minutes • 🔒 = target just locked in`
+      ? `Updates every ${pollIntervalMinutes} minutes • ETAs account for the target's own pace when it's in the top-1,000 leagues`
       : 'Tracking started — hourly rates appear once an hour of data has been collected',
   });
 
@@ -174,58 +180,86 @@ function trendArrow(rate) {
   return '⚪';
 }
 
-/** Pick an accent color based on whether the tracked league is gaining on its locked ahead-target. */
-function pickColor(aheadTarget, leagueRate, aheadEta) {
-  if (!aheadTarget) return COLOR_GAINING; // #1, nothing but good news
-  if (leagueRate == null) return COLOR_NEUTRAL; // still collecting data, no rate known yet
-  if (aheadEta === Infinity) return COLOR_LOSING; // rate is zero/negative, never reaching a fixed target
-  return COLOR_GAINING; // finite ETA, or target already beaten — both good news
+/** Pick an accent color based on whether the tracked league is gaining on the live league ahead. */
+function pickColor(aheadLeague, leagueRate, aheadResult) {
+  if (!aheadLeague) return COLOR_GAINING; // #1, nothing but good news
+  if (leagueRate == null || aheadResult == null) return COLOR_NEUTRAL; // still collecting data
+  if (typeof aheadResult === 'object' && aheadResult.fallingBehind) return COLOR_LOSING;
+  return COLOR_GAINING; // finite ETA — actively closing the gap (or one-sided-positive)
 }
 
-function buildSummaryLine({ neighbors, leagueRate, aheadTarget, aheadEta }) {
+function buildSummaryLine({ neighbors, leagueRate, aheadResult }) {
   if (leagueRate == null) {
     return '🕒 Collecting data — the first hourly rate will appear once an hour has passed.';
   }
-  if (!aheadTarget) {
+  if (!neighbors.ahead) {
     return `🥇 Sitting at **#1** with ${formatRate(leagueRate)}. Nothing but clear road ahead.`;
   }
-  if (aheadEta === Infinity) {
-    return `📉 Not currently gaining on the locked target **${aheadTarget.target_league_name}** at this rate.`;
+  if (aheadResult && typeof aheadResult === 'object' && aheadResult.fallingBehind) {
+    return `📉 **${neighbors.ahead.Name}** is pulling away faster than you're gaining — the gap is growing.`;
   }
-  if (typeof aheadEta === 'number') {
-    return `📈 Chasing locked target **${aheadTarget.target_league_name}** — ETA: **${formatDuration(aheadEta)}**.`;
+  if (aheadResult && typeof aheadResult.eta === 'number') {
+    return `📈 Chasing **${neighbors.ahead.Name}** — ETA: **${formatDuration(aheadResult.eta)}**${aheadResult.oneSided ? ' (estimate)' : ''}.`;
   }
   return `Currently rank **#${neighbors.rank}**, tracking at ${formatRate(leagueRate)}.`;
 }
 
 /**
- * ETA to close a FIXED gap at a constant rate — simpler than the old
- * two-mover math since the target no longer has its own rate to account for.
- * Returns hours (number), Infinity if rate <= 0 and gap > 0, or null if
- * already at/past the target or rate unknown.
+ * Compute the overtake result between a chaser and a target. Uses real
+ * two-body math (timeToOvertake, accounting for BOTH rates) whenever the
+ * target's own rate is known; falls back to treating the target as
+ * stationary only when we genuinely don't have their rate, and flags that
+ * fallback explicitly via `oneSided` so the UI can say so.
+ *
+ * Returns:
+ *   - null if the chaser's own rate is unknown (still collecting data)
+ *   - null if the chaser is already at/past the target
+ *   - { fallingBehind: true, gapGrowthPerHour } if the target is pulling away
+ *   - { eta: hours, oneSided: boolean } otherwise
  */
-function etaToFixedTarget(currentPoints, rate, targetPoints) {
-  if (rate == null) return null;
-  const gap = targetPoints - currentPoints;
-  if (gap <= 0) return null; // already there
-  if (rate <= 0) return Infinity;
-  return gap / rate;
+function computeOvertake(chaserPoints, chaserRate, targetPoints, targetRate) {
+  if (chaserRate == null) return null;
+  if (chaserPoints >= targetPoints) return null;
+
+  if (targetRate != null) {
+    const result = timeToOvertake({ chaserPoints, chaserRate, targetPoints, targetRate });
+    if (result === null) return null;
+    if (typeof result === 'object' && result.fallingBehind) return result;
+    return { eta: result, oneSided: false };
+  }
+
+  // Target's rate unknown (outside top-1,000 leagues, or rankings job hasn't
+  // run twice yet) — fall back to a one-sided estimate treating them as
+  // stationary, clearly flagged so the UI doesn't present it as exact.
+  const gap = targetPoints - chaserPoints;
+  if (chaserRate <= 0) return { fallingBehind: true, gapGrowthPerHour: 0 };
+  return { eta: gap / chaserRate, oneSided: true };
 }
 
-function buildFixedTargetLine({ currentPoints, leagueRate, targetPoints, directionLabel }) {
+function buildTargetLine({ currentPoints, leagueRate, targetPoints, targetRate, directionLabel }) {
   if (leagueRate == null) {
     return 'Collecting data — check back once an hour of history is available.';
   }
 
-  const gap = targetPoints - currentPoints;
-  if (gap <= 0) {
-    return `✅ Target reached! (${formatPoints(currentPoints - targetPoints)} pts past)`;
+  const gap = Math.abs(targetPoints - currentPoints);
+
+  if (currentPoints >= targetPoints) {
+    return `✅ Already past this mark! (${formatPoints(currentPoints - targetPoints)} pts ahead)`;
   }
 
-  const eta = etaToFixedTarget(currentPoints, leagueRate, targetPoints);
-  if (eta === Infinity) {
-    return `Gap: **${formatPoints(gap)}** pts\n📉 not gaining at current rate`;
+  const result = computeOvertake(currentPoints, leagueRate, targetPoints, targetRate);
+
+  if (result && typeof result === 'object' && result.fallingBehind) {
+    const growth = result.gapGrowthPerHour
+      ? `+${Math.round(result.gapGrowthPerHour).toLocaleString()}/hr wider`
+      : 'not gaining at current rate';
+    return `Gap: **${formatPoints(gap)}** pts\n📉 ${growth}`;
   }
 
-  return `Gap: **${formatPoints(gap)}** pts\nETA to ${directionLabel}: **${formatDuration(eta)}**`;
+  if (result && typeof result.eta === 'number') {
+    const suffix = result.oneSided ? ' (estimate — target rate unknown)' : '';
+    return `Gap: **${formatPoints(gap)}** pts\nETA to ${directionLabel}: **${formatDuration(result.eta)}**${suffix}`;
+  }
+
+  return `Gap: **${formatPoints(gap)}** pts`;
 }

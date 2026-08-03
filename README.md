@@ -41,34 +41,53 @@ Each tracked embed also shows, once an hour of history exists:
 - ⏱️ **Next Update** — a live Discord relative-timestamp counting down to the
   next 10-minute refresh
 
-### Locked targets (why the ETA doesn't jump around)
+### How targets stay live without any recalculation delay
 
-The league directly ahead of you, the league behind you, and each milestone
-(top 100/50/10) are all **locked targets**: the points value you need to
-reach is captured once, the moment that target is first set, and stays fixed
-from then on — even if the league that originally held that spot gets
-overtaken by someone else, or a completely different league ends up in that
-position on the live leaderboard. Only your own tracked league's point rate
-moves the ETA.
+The league ahead of you, the league behind you, and each milestone (top
+100/50/10) always target **whoever currently holds that position** — read
+fresh on every single poll, with no locking and no waiting period when the
+leaderboard reshuffles. If a different league ends up at rank 100 between one
+poll and the next, the ETA updates immediately to reflect the new gap.
 
-When a target is beaten, a fresh one is automatically locked from whoever
-currently holds that position, and the field shows a 🔒 to flag it just got
-re-locked. This means the countdown you see is always progress toward one
-consistent number, not a moving goalpost that resets every time someone else
-shuffles the leaderboard.
+### ETAs account for the target's own pace, not just yours
 
-One asymmetry worth knowing: the "ahead" target and milestones show a real
-ETA, because they're measured against *your* rate. The "behind" league only
-shows a static points gap, not an ETA — the bot doesn't track other leagues'
-point rates (only the one you're tracking), so a countdown for them would be
-a guess dressed up as data. Showing the honest gap instead.
+Every ETA is two-body when possible: it uses **both** your hourly rate and
+the target's hourly rate, not just yours. This matters — a league sitting at
+rank 10 is also earning points, often faster than a league further down the
+board. Treating them as standing still would either understate how long
+catching up actually takes, or — worse — show a finite ETA when you're
+genuinely not gaining on them at all, because they're pulling away faster
+than you're climbing. If the numbers say you're falling behind, the bot shows
+the growing gap instead of a fake countdown.
 
-## Global player rankings
+This is powered by the same hourly rankings job that builds the global player
+leaderboard (see below) — every top-1,000 league gets its own points reading
+recorded once an hour, which is enough to compute a rate for them too, the
+same way the bot computes yours.
+
+Two honest limitations worth knowing:
+- **Target rates need the rankings job to have run at least twice** (so, up
+  to ~2 hours after the bot first starts) before two-body math is available.
+  Until then — or for any target outside the top 1,000 leagues — the bot
+  falls back to a one-sided estimate that treats the target as stationary,
+  and labels it clearly as `(estimate — target rate unknown)` rather than
+  presenting a guess as a precise number.
+- This only ever affects the *ETA number*. Your own tracked league's hourly
+  rate always needs its own one-time hour of warm-up per channel, same as
+  before — that part hasn't changed.
+
+## Global player rankings & league-rate tracking
 
 Separately from the 10-minute tracked-league poller, a background job runs
 **once an hour** and rebuilds a leaderboard of individual players across the
 **top 1,000 leagues** (by league Points). This powers the global-rank portion
 of `/leagueplayersearch`.
+
+The same hourly pass also records each of those 1,000 leagues' current points
+into a small history table — at no extra API cost, since it reuses data the
+job already fetches — which is what lets the bot compute a real hourly rate
+for any of those leagues, not just the one actively being tracked. That
+league-rate data is what powers the two-body ETA math described above.
 
 Why top 1,000 and not every league: the PS99 API only returns individual member
 contributions from the *per-league detail endpoint* — there's no bulk
@@ -76,12 +95,14 @@ endpoint for it. Pulling all ~90,000+ leagues would mean tens of thousands of
 API calls and multiple hours per rebuild. Restricting to the top 1,000 keeps a
 full rebuild to about 1,000 calls (several minutes, with a small delay
 between requests to stay easy on the PS99 API), at the cost of only covering
-players in genuinely competitive leagues — if someone's league is outside the
-top 1,000, they won't show up in the global-rank lookup.
+players (and league rates) in genuinely competitive leagues — if someone's
+league is outside the top 1,000, they won't show up in the global-rank
+lookup, and ETAs involving them fall back to the one-sided estimate.
 
 The rankings table is fully replaced on each rebuild (not accumulated), so it
 always reflects a single consistent snapshot rather than a mix of old and new
-data.
+data. League points history is append-only but pruned to the last 26 hours.
+
 
 ## Local setup
 
@@ -175,3 +196,15 @@ hourly rates again after each restart.
 - Overtake ETAs assume both leagues keep their current trailing-hour rate
   constant — they're an estimate, not a guarantee, since rates naturally
   fluctuate.
+- **Not yet built: projected final placement at battle/season end.** The PS99
+  API likely has a way to get the current battle's timing (`v1/clans` battle
+  detail, and a legacy `/api/activeClanBattle` endpoint), which could power a
+  "projected rank when the battle ends" feature using the same rate math
+  described above. This wasn't built yet because the legacy endpoint has
+  documented reliability problems (reports of it lagging hours to over a day
+  behind the actual battle state — see PS99 API docs issue #95), and the
+  exact field shape of the newer `v1/clans` battle-detail endpoint hasn't
+  been confirmed. Building this on unverified or stale end-date data risked
+  showing a confidently wrong projection, which seemed worse than not having
+  the feature. Worth revisiting once the exact endpoint/fields can be
+  confirmed against a live response.

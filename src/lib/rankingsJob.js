@@ -1,5 +1,5 @@
 import { getLeaguesPage, getLeagueDetail } from './ps99Api.js';
-import { replacePlayerRankings, setRankingsMeta } from './db.js';
+import { replacePlayerRankings, setRankingsMeta, recordLeaguePointsBatch, pruneOldLeaguePointsHistory } from './db.js';
 import { resolveDisplayNames } from './robloxNames.js';
 
 // How many top leagues (by Points) to pull individual player contributions
@@ -38,6 +38,13 @@ export async function rebuildPlayerRankings() {
     if (leagueSummaries.length >= TOP_LEAGUES_COUNT || leagueSummaries.length >= data.total) break;
   }
   const targets = leagueSummaries.slice(0, TOP_LEAGUES_COUNT);
+
+  // Record a points reading for every top-N league right away, from the cheap
+  // list data we already have — this is what lets ANY of these leagues get a
+  // real hourly rate later (not just the one actively being tracked), without
+  // needing any extra API calls beyond what we're already making.
+  recordLeaguePointsBatch(targets.map((t) => ({ leagueId: t.ID, leagueName: t.Name, points: t.Points })));
+  pruneOldLeaguePointsHistory();
 
   // Step 2: fetch full detail (with PointContributions) for each, one at a
   // time with a small delay — this is the expensive part.

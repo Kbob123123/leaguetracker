@@ -48,12 +48,26 @@ CREATE TABLE IF NOT EXISTS rankings_meta (
   value TEXT
 );
 
--- One row per (channel, target_key). target_key is 'ahead', 'top100', 'top50',
--- or 'top10'. target_points is snapshotted ONCE when the target is (re)locked
--- and never changes until beaten — this is what makes ETAs stable even when
--- the league that originally held that points value moves around or gets
--- overtaken by someone else in the meantime. Only the tracked league's own
--- rate affects the ETA against a locked target.
+-- One row per (league_id, ts) each time the hourly rankings job runs. This is
+-- what lets the bot compute a real hourly rate for ANY of the top-N leagues,
+-- not just the one being actively tracked in a channel — e.g. so a milestone
+-- ETA ("time to reach top 10") can account for the fact that the top-10
+-- league is also gaining points, instead of treating it as standing still.
+CREATE TABLE IF NOT EXISTS league_points_history (
+  league_id   TEXT NOT NULL,
+  league_name TEXT NOT NULL,
+  points      INTEGER NOT NULL,
+  ts          INTEGER NOT NULL,
+  PRIMARY KEY (league_id, ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_league_points_history_league_ts
+  ON league_points_history (league_id, ts);
+
+-- Legacy table from an earlier "locked target" design that has since been
+-- replaced with always-live target calculation (see embed.js / poller.js).
+-- Left here harmlessly for backward compatibility with existing deployments;
+-- nothing reads from or writes to it anymore.
 CREATE TABLE IF NOT EXISTS locked_targets (
   channel_id     TEXT NOT NULL,
   target_key     TEXT NOT NULL,
@@ -77,7 +91,6 @@ export function addTrackedChannel({ channelId, guildId, leagueName }) {
 export function removeTrackedChannel(channelId) {
   db.prepare(`DELETE FROM tracked_channels WHERE channel_id = ?`).run(channelId);
   db.prepare(`DELETE FROM snapshots WHERE channel_id = ?`).run(channelId);
-  db.prepare(`DELETE FROM locked_targets WHERE channel_id = ?`).run(channelId);
 }
 
 export function getTrackedChannel(channelId) {
@@ -205,6 +218,62 @@ export function getPlayerRankingsCount() {
   return count;
 }
 
+/**
+ * Record a batch of (league, points) readings at the current time, one
+ * transaction. Called once per hourly rankings job run for every top-N
+ * league. Safe to call even if a league was already recorded this run
+ * (won't happen in practice since ts is the same for a whole batch, but the
+ * composite primary key protects against accidental double-writes).
+ */
+export function recordLeaguePointsBatch(rows) {
+  const insert = db.prepare(`
+    INSERT INTO league_points_history (league_id, league_name, points, ts)
+    VALUES (@leagueId, @leagueName, @points, @ts)
+    ON CONFLICT(league_id, ts) DO UPDATE SET points = excluded.points, league_name = excluded.league_name
+  `);
+  const ts = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      insert.run({ leagueId: row.leagueId, leagueName: row.leagueName, points: row.points, ts });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * Get the points reading for a league closest to (but not more recent than)
+ * `targetSecondsAgo` seconds ago. Used to compute that league's own hourly
+ * rate the same way we compute it for the actively tracked league. Returns
+ * null if there's no reading old enough yet (e.g. rankings job hasn't run
+ * twice yet since the bot started).
+ */
+export function getLeaguePointsNear(leagueId, targetSecondsAgo) {
+  const cutoff = Math.floor(Date.now() / 1000) - targetSecondsAgo;
+  return db.prepare(`
+    SELECT * FROM league_points_history
+    WHERE league_id = ? AND ts <= ?
+    ORDER BY ts DESC LIMIT 1
+  `).get(leagueId, cutoff);
+}
+
+/** Most recent points reading for a league, if any. */
+export function getLatestLeaguePoints(leagueId) {
+  return db.prepare(`
+    SELECT * FROM league_points_history WHERE league_id = ? ORDER BY ts DESC LIMIT 1
+  `).get(leagueId);
+}
+
+/** Prune history older than N seconds across all leagues (default: keep 26h, mirrors snapshot pruning). */
+export function pruneOldLeaguePointsHistory(keepSeconds = 26 * 3600) {
+  const cutoff = Math.floor(Date.now() / 1000) - keepSeconds;
+  db.prepare(`DELETE FROM league_points_history WHERE ts < ?`).run(cutoff);
+}
+
 export function setRankingsMeta(key, value) {
   db.prepare(`INSERT INTO rankings_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(
     key,
@@ -215,37 +284,4 @@ export function setRankingsMeta(key, value) {
 export function getRankingsMeta(key) {
   const row = db.prepare(`SELECT value FROM rankings_meta WHERE key = ?`).get(key);
   return row ? row.value : null;
-}
-
-/** Get the currently locked target for a channel/key ('ahead', 'top100', 'top50', 'top10'), or null if never locked. */
-export function getLockedTarget(channelId, targetKey) {
-  return db.prepare(`SELECT * FROM locked_targets WHERE channel_id = ? AND target_key = ?`).get(channelId, targetKey);
-}
-
-export function getAllLockedTargets(channelId) {
-  return db.prepare(`SELECT * FROM locked_targets WHERE channel_id = ?`).all(channelId);
-}
-
-/**
- * Lock (or re-lock, after being beaten) a target's points threshold. This is
- * the only place target_points is written — every poll after this reads it
- * back unchanged until the tracked league's points reach/exceed it.
- */
-export function setLockedTarget(channelId, targetKey, { leagueId, leagueName, points }) {
-  db.prepare(`
-    INSERT INTO locked_targets (channel_id, target_key, target_league_id, target_league_name, target_points, locked_at)
-    VALUES (@channelId, @targetKey, @leagueId, @leagueName, @points, @lockedAt)
-    ON CONFLICT(channel_id, target_key) DO UPDATE SET
-      target_league_id = excluded.target_league_id,
-      target_league_name = excluded.target_league_name,
-      target_points = excluded.target_points,
-      locked_at = excluded.locked_at
-  `).run({
-    channelId,
-    targetKey,
-    leagueId: leagueId ?? null,
-    leagueName: leagueName ?? null,
-    points,
-    lockedAt: Math.floor(Date.now() / 1000),
-  });
 }
