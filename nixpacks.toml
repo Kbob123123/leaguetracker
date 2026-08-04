@@ -4,14 +4,16 @@
 # canvas's native binary dlopen()s at require() time, crashing the whole bot
 # on startup with ERR_DLOPEN_FAILED even though `npm install` succeeds fine.
 #
-# Using nixLibs (not aptPkgs) deliberately: confirmed via direct diagnostics
-# against a deployed container (find + ldconfig -p) that apt DOES correctly
-# install these libraries to disk, but Nixpacks' runtime LD_LIBRARY_PATH
-# doesn't reliably include the directory they land in, so dlopen() still
-# fails even though the file exists. nixLibs is Nixpacks' documented
-# mechanism specifically for "install this Nix package AND add its library
-# path to LD_LIBRARY_PATH automatically" (see https://nixpacks.com/docs/configuration/file)
-# — the more direct fix than fighting apt's linker registration.
+# IMPORTANT: all of cairo's own dependencies (freetype, fontconfig, pixman,
+# harfbuzz) are listed explicitly here too, sourced from Nix rather than left
+# to resolve against whatever the base image happens to have. Mixing an
+# apt-installed cairo with a system freetype (or vice versa) caused a
+# separate crash — "undefined symbol: FT_Get_Transform" — because the two
+# were built against incompatible versions of each other. Getting the whole
+# dependency chain from ONE package source (Nix, via nixLibs) avoids that
+# ABI mismatch. nixLibs is Nixpacks' documented mechanism for "install this
+# Nix package AND add its library path to LD_LIBRARY_PATH automatically"
+# (see https://nixpacks.com/docs/configuration/file).
 [phases.setup]
 nixLibs = [
   "util-linux",
@@ -19,5 +21,9 @@ nixLibs = [
   "pango",
   "libjpeg",
   "giflib",
-  "librsvg"
+  "librsvg",
+  "freetype",
+  "fontconfig",
+  "pixman",
+  "harfbuzz"
 ]
