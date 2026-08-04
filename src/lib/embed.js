@@ -1,6 +1,6 @@
 import { EmbedBuilder } from 'discord.js';
 import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
-import { hoursUntilBattleEnd, projectPointsAtBattleEnd } from './battleTimer.js';
+import { nextBattleEndUnix, projectPointsAtBattleEnd, projectPlacementBracket } from './battleTimer.js';
 
 const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
 const COLOR_NEUTRAL = 0x5865f2; // discord blurple — steady / no clear trend yet
@@ -75,7 +75,8 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
         leagueRate,
         targetPoints: neighbors.ahead.Points,
         targetRate: neighbors.ahead.Rate,
-        directionLabel: 'catch up',
+        directionLabel: 'Catch up',
+        nowUnix: now,
       }),
       inline: true,
     });
@@ -92,7 +93,8 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
         leagueRate: neighbors.behind.Rate,
         targetPoints: currentPoints,
         targetRate: leagueRate,
-        directionLabel: 'catch up to you',
+        directionLabel: 'Catches up to you',
+        nowUnix: now,
       }),
       inline: true,
     });
@@ -109,7 +111,8 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
         leagueRate,
         targetPoints: target.Points,
         targetRate: target.Rate,
-        directionLabel: `reach top ${rank}`,
+        directionLabel: `Reach top ${rank}`,
+        nowUnix: now,
       });
       return `**Top ${rank}** (${target.Name}): ${line.replace('\n', ' — ')}`;
     });
@@ -126,18 +129,25 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
   // --- Battle end projection: where your points would land if your current
   // rate holds until Saturday 2am AEST. Clearly labeled as a projection, not
   // a promise — rates fluctuate and this can't account for other leagues
-  // changing their own pace between now and then. Also includes a simple
-  // sanity check against the immediate neighbor's CURRENT points (not a full
-  // rank forecast, since that would need every nearby league's own rate
-  // projected too — too much compounded guesswork to present as reliable). ---
+  // changing their own pace between now and then. Includes a rough placement
+  // BRACKET (not a fake-precise single rank) derived from the same milestone
+  // leagues already tracked, each projected forward the same way. Countdown
+  // uses Discord's native <t:...:R> markup so it live-updates in the client
+  // with no polling needed on our end. ---
   if (leagueRate != null) {
-    const hoursLeft = hoursUntilBattleEnd(new Date(now * 1000));
+    const battleEndUnix = nextBattleEndUnix(new Date(now * 1000));
     const projectedPoints = projectPointsAtBattleEnd(currentPoints, leagueRate, new Date(now * 1000));
+    const placementBracket = projectPlacementBracket(projectedPoints, milestones, new Date(now * 1000));
 
     const lines = [
       `~${formatPoints(projectedPoints)} pts if this rate holds`,
-      `Battle ends in **${formatDuration(hoursLeft)}** (Sat 2am AEST)`,
     ];
+
+    if (placementBracket) {
+      lines.push(`Projected placement: **${placementBracket}**`);
+    }
+
+    lines.push(`Battle ends <t:${battleEndUnix}:R> (Sat 2am AEST)`);
 
     if (neighbors.ahead) {
       const wouldPass = projectedPoints >= neighbors.ahead.Points;
@@ -269,7 +279,7 @@ function computeOvertake(chaserPoints, chaserRate, targetPoints, targetRate) {
   return { eta: gap / chaserRate, oneSided: true };
 }
 
-function buildTargetLine({ currentPoints, leagueRate, targetPoints, targetRate, directionLabel }) {
+function buildTargetLine({ currentPoints, leagueRate, targetPoints, targetRate, directionLabel, nowUnix }) {
   if (leagueRate == null) {
     return 'Collecting data — check back once an hour of history is available.';
   }
@@ -291,7 +301,10 @@ function buildTargetLine({ currentPoints, leagueRate, targetPoints, targetRate, 
 
   if (result && typeof result.eta === 'number') {
     const suffix = result.oneSided ? ' (estimate — target rate unknown)' : '';
-    return `Gap: **${formatPoints(gap)}** pts\nETA to ${directionLabel}: **${formatDuration(result.eta)}**${suffix}`;
+    // Live-updating countdown via Discord's native timestamp markup, rather
+    // than a static "48m" string that's only accurate the instant it's posted.
+    const etaUnix = Math.round(nowUnix + result.eta * 3600);
+    return `Gap: **${formatPoints(gap)}** pts\n${directionLabel}: <t:${etaUnix}:R>${suffix}`;
   }
 
   return `Gap: **${formatPoints(gap)}** pts`;

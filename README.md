@@ -199,27 +199,32 @@ hourly rates again after each restart.
   fluctuate.
 - **Battle end projection (🏁 Projected at Battle End).** Every tracked embed
   shows the league's projected points if its current hourly rate holds until
-  the battle ends, plus a countdown. This is anchored to a fixed weekly
-  moment — **Saturday 2am AEST** — hardcoded in `src/lib/battleTimer.js`
-  rather than pulled from an API, since the API's battle-timing endpoints
-  turned out to have real reliability problems (see below). AEST is fixed at
-  UTC+10 with no daylight-saving adjustment needed, which keeps the math
-  simple and exact.
+  the battle ends, a rough **placement bracket**, and a live countdown. This
+  is anchored to a fixed weekly moment — **Saturday 2am AEST** — hardcoded in
+  `src/lib/battleTimer.js` rather than pulled from an API, since the API's
+  battle-timing endpoints turned out to have real reliability problems (see
+  below). AEST is fixed at UTC+10 with no daylight-saving adjustment needed,
+  which keeps the math simple and exact.
 
-  Two things this deliberately does NOT try to do, because the underlying
-  data isn't reliable enough to back them:
-  - **It doesn't know if a battle even exists next week**, or what type
-    (clan vs. league) — battle scheduling depends on game updates and isn't
-    predictable in advance. The countdown always points to the next
-    Saturday-2am-AEST moment regardless.
-  - **It doesn't project a full rank forecast** — only points. A true rank
-    projection would need every nearby league's own rate projected forward
-    too, compounding several independent, fluctuating estimates into one
-    number that would look precise but likely wouldn't be. Instead, it does
-    one honest, limited sanity check: whether the projected points would
-    currently be enough to beat the immediate "ahead" neighbor's points
-    *right now* — clearly caveated that they'll likely have grown too by
-    battle end.
+  All countdowns in the embed (ahead/behind/milestone ETAs and the battle-end
+  timer) use Discord's native `<t:...:R>` timestamp markup, which counts down
+  live in the client with no extra work from the bot — the number you see is
+  always accurate to the second, not just accurate at the moment it was posted.
+
+  The **placement bracket** ("top 50", "outside top 100", etc.) is
+  deliberately a bracket, not a fake-precise single rank number like "#47."
+  It's built by projecting the same milestone leagues (top 100/50/10) forward
+  the same way, using their own real hourly rates from the top-1,000 rankings
+  job, then checking which bracket the tracked league's own projection falls
+  into. A true single-rank forecast would need every nearby league's rate
+  projected too, compounding many independent, fluctuating estimates into a
+  number that would look exact but likely wouldn't be — the bracket keeps the
+  uncertainty bounded to just the few leagues already reliably tracked.
+
+  One thing this deliberately does NOT try to do: **it doesn't know if a
+  battle even exists next week**, or what type (clan vs. league) — battle
+  scheduling depends on game updates and isn't predictable in advance. The
+  countdown always points to the next Saturday-2am-AEST moment regardless.
 
   Why not pull the end-date from the API instead of hardcoding it: the PS99
   API has a couple of candidates (`v1/clans` battle detail, and a legacy

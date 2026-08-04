@@ -52,6 +52,11 @@ export function hoursUntilBattleEnd(fromDate = new Date()) {
   return Math.max(0, (end.getTime() - fromDate.getTime()) / 3600000);
 }
 
+/** Unix seconds timestamp of the next battle end — for Discord's native <t:...:R> countdown markup. */
+export function nextBattleEndUnix(fromDate = new Date()) {
+  return Math.floor(nextBattleEnd(fromDate).getTime() / 1000);
+}
+
 /**
  * Project a league's points at battle end, assuming its current hourly rate
  * holds constant. Returns null if rate is unknown. This is explicitly a
@@ -62,4 +67,50 @@ export function projectPointsAtBattleEnd(currentPoints, hourlyRateValue, fromDat
   if (hourlyRateValue == null) return null;
   const hoursLeft = hoursUntilBattleEnd(fromDate);
   return currentPoints + hourlyRateValue * hoursLeft;
+}
+
+/**
+ * Rough projected placement BRACKET at battle end, using the same milestone
+ * leagues (top 100/50/10) the bot already tracks rates for. Deliberately a
+ * bracket ("looks like top 50-100") rather than a fake-precise single rank
+ * number — a true single-rank forecast would need every nearby league's own
+ * rate projected too, compounding several independent, fluctuating estimates
+ * into a number that would look exact but likely wouldn't be. This only
+ * projects the handful of milestone leagues we already have real rates for,
+ * so the uncertainty stays bounded and honest.
+ *
+ * @param {number} projectedPoints  this league's own projected points at battle end
+ * @param {object} milestones  { [rank]: { Points, Rate } } as used elsewhere in embed.js
+ * @param {Date} fromDate
+ * @returns {string|null} a short bracket label, or null if no milestone data to compare against
+ */
+export function projectPlacementBracket(projectedPoints, milestones, fromDate = new Date()) {
+  if (projectedPoints == null || !milestones) return null;
+
+  const hoursLeft = hoursUntilBattleEnd(fromDate);
+  const projectedMilestones = {}; // rank -> projected points for that milestone league
+
+  for (const [rank, target] of Object.entries(milestones)) {
+    if (!target) continue;
+    const rate = target.Rate ?? 0; // if we don't know their rate, assume stationary (conservative-ish)
+    projectedMilestones[rank] = target.Points + rate * hoursLeft;
+  }
+
+  const ranks = Object.keys(projectedMilestones)
+    .map(Number)
+    .sort((a, b) => a - b); // [10, 50, 100]
+
+  if (ranks.length === 0) return null;
+
+  // Find where projectedPoints falls relative to the projected milestone thresholds.
+  // ranks is ascending by rank number (10, 50, 100), and points DESCEND as rank
+  // number increases (rank 10 needs more points than rank 100).
+  for (const rank of ranks) {
+    if (projectedPoints >= projectedMilestones[rank]) {
+      return rank === ranks[0] ? `top ${rank} or better` : `top ${rank}`;
+    }
+  }
+
+  const loosest = ranks[ranks.length - 1];
+  return `outside top ${loosest}`;
 }
