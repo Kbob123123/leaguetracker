@@ -1,0 +1,17 @@
+# Extra system packages needed at runtime by the `canvas` npm package (used
+# by chartjs-node-canvas to render the member-comparison graph). Without
+# these, Railway's default Nixpacks image is missing shared libraries like
+# libuuid.so.1 that canvas's native binary dlopen()s at require() time,
+# crashing the whole bot on startup with ERR_DLOPEN_FAILED even though `npm
+# install` succeeds fine (the JS package installs; the OS library it needs
+# doesn't exist on the image without this).
+[phases.setup]
+aptPkgs = [
+  "libuuid1",
+  "libcairo2",
+  "libpango-1.0-0",
+  "libpangocairo-1.0-0",
+  "libjpeg62-turbo",
+  "libgif7",
+  "librsvg2-2"
+]
