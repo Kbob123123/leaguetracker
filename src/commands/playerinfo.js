@@ -5,6 +5,15 @@ import { TOP_LEAGUES_COUNT } from '../lib/rankingsJob.js';
 
 const HOUR_SECONDS = 3600;
 
+// Strip anything that isn't a letter or digit before comparing, so "Kbob_2021",
+// "kbob 2021", and "KBOB2021" are all treated as the same query. Roblox
+// display names commonly differ from what a player types by underscores,
+// spacing, or casing alone — a strict substring match on the raw query missed
+// real matches for exactly this reason.
+function normalize(str) {
+  return (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 export const data = new SlashCommandBuilder()
   .setName('playerinfo')
   .setDescription("Look up a member's points, hourly rate, and global rank across leagues tracked in this server.")
@@ -15,7 +24,8 @@ export const data = new SlashCommandBuilder()
 export async function execute(interaction) {
   await interaction.deferReply();
 
-  const query = interaction.options.getString('player', true).trim().toLowerCase();
+  const rawQuery = interaction.options.getString('player', true).trim();
+  const query = normalize(rawQuery);
   if (query.length < 2) {
     await interaction.editReply('❌ Enter at least 2 characters to search for.');
     return;
@@ -34,7 +44,12 @@ export async function execute(interaction) {
   // Search every tracked channel's latest snapshot for a member whose display
   // name contains the query. Collects ALL matches (a name could appear in
   // more than one tracked league) rather than stopping at the first hit.
+  // Also builds a flat list of every known member name across tracked
+  // leagues, so a "no match" reply can show what's actually on file instead
+  // of a dead-end error — useful for spotting name mismatches at a glance.
   const matches = [];
+  const allKnownMembers = [];
+
   for (const tracked of trackedInGuild) {
     const latest = getLatestSnapshot(tracked.channel_id);
     if (!latest) continue;
@@ -43,7 +58,9 @@ export async function execute(interaction) {
     const sortedByPoints = [...members].sort((a, b) => b.points - a.points);
 
     for (const member of members) {
-      if (!member.displayName || !member.displayName.toLowerCase().includes(query)) continue;
+      allKnownMembers.push({ displayName: member.displayName, leagueName: tracked.league_name });
+
+      if (!normalize(member.displayName).includes(query)) continue;
 
       const hourAgo = getSnapshotNear(tracked.channel_id, HOUR_SECONDS);
       const validHourAgo = hourAgo && hourAgo.id !== latest.id ? hourAgo : null;
@@ -77,9 +94,15 @@ export async function execute(interaction) {
   }
 
   if (matches.length === 0) {
+    const rosterPreview = allKnownMembers
+      .slice(0, 25)
+      .map((m) => `${m.displayName} (${m.leagueName})`)
+      .join(', ');
+    const rosterNote = allKnownMembers.length
+      ? `\n\nMembers on file: ${rosterPreview}${allKnownMembers.length > 25 ? ', ...' : ''}`
+      : '';
     await interaction.editReply(
-      `❌ No member matching **${query}** found in any league currently tracked in this server. ` +
-        `This only searches members of tracked leagues — check \`/listmonitoredleagues\` to see what's being tracked.`
+      `❌ No member matching **${rawQuery}** found in any league currently tracked in this server.` + rosterNote
     );
     return;
   }
