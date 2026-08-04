@@ -1,17 +1,23 @@
-# Extra system packages needed at runtime by the `canvas` npm package (used
+# Extra system libraries needed at runtime by the `canvas` npm package (used
 # by chartjs-node-canvas to render the member-comparison graph). Without
-# these, Railway's default Nixpacks image is missing shared libraries like
-# libuuid.so.1 that canvas's native binary dlopen()s at require() time,
-# crashing the whole bot on startup with ERR_DLOPEN_FAILED even though `npm
-# install` succeeds fine (the JS package installs; the OS library it needs
-# doesn't exist on the image without this).
+# these, Railway's default Nixpacks image is missing shared libraries that
+# canvas's native binary dlopen()s at require() time, crashing the whole bot
+# on startup with ERR_DLOPEN_FAILED even though `npm install` succeeds fine.
+#
+# Using nixLibs (not aptPkgs) deliberately: confirmed via direct diagnostics
+# against a deployed container (find + ldconfig -p) that apt DOES correctly
+# install these libraries to disk, but Nixpacks' runtime LD_LIBRARY_PATH
+# doesn't reliably include the directory they land in, so dlopen() still
+# fails even though the file exists. nixLibs is Nixpacks' documented
+# mechanism specifically for "install this Nix package AND add its library
+# path to LD_LIBRARY_PATH automatically" (see https://nixpacks.com/docs/configuration/file)
+# — the more direct fix than fighting apt's linker registration.
 [phases.setup]
-aptPkgs = [
-  "libuuid1",
-  "libcairo2",
-  "libpango-1.0-0",
-  "libpangocairo-1.0-0",
-  "libjpeg-turbo8",
-  "libgif7",
-  "librsvg2-2"
+nixLibs = [
+  "util-linux",
+  "cairo",
+  "pango",
+  "libjpeg",
+  "giflib",
+  "librsvg"
 ]
