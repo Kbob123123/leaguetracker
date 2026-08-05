@@ -64,6 +64,22 @@ CREATE TABLE IF NOT EXISTS league_points_history (
 CREATE INDEX IF NOT EXISTS idx_league_points_history_league_ts
   ON league_points_history (league_id, ts);
 
+-- One row per (user_id, league_id, ts) each hourly rankings pass. Lets the
+-- bot compute a real hourly rate for any individual member of any top-1,000
+-- league (not just members of the one channel-tracked league), which powers
+-- the standalone /leaguesnapshot lookup and per-member rate in /playerinfo.
+CREATE TABLE IF NOT EXISTS player_points_history (
+  user_id      TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  league_id    TEXT NOT NULL,
+  points       INTEGER NOT NULL,
+  ts           INTEGER NOT NULL,
+  PRIMARY KEY (user_id, league_id, ts)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_points_history_user_ts
+  ON player_points_history (user_id, ts);
+
 -- Legacy table from an earlier "locked target" design that has since been
 -- replaced with always-live target calculation (see embed.js / poller.js).
 -- Left here harmlessly for backward compatibility with existing deployments;
@@ -218,6 +234,16 @@ export function getPlayerRankingsCount() {
   return count;
 }
 
+/** Search player_rankings by display name substring (case-insensitive), up to `limit` results, best points first. */
+export function getPlayerRankingByName(query, limit = 10) {
+  return db.prepare(`
+    SELECT * FROM player_rankings
+    WHERE LOWER(display_name) LIKE '%' || LOWER(?) || '%'
+    ORDER BY points DESC
+    LIMIT ?
+  `).all(query, limit);
+}
+
 /**
  * Record a batch of (league, points) readings at the current time, one
  * transaction. Called once per hourly rankings job run for every top-N
@@ -272,6 +298,69 @@ export function getLatestLeaguePoints(leagueId) {
 export function pruneOldLeaguePointsHistory(keepSeconds = 26 * 3600) {
   const cutoff = Math.floor(Date.now() / 1000) - keepSeconds;
   db.prepare(`DELETE FROM league_points_history WHERE ts < ?`).run(cutoff);
+}
+
+/**
+ * Record a batch of (player, league, points) readings at the current time,
+ * one transaction. Called once per hourly rankings job run for every member
+ * of every top-N league — reuses PointContributions data already fetched for
+ * player_rankings, so this costs no extra API calls.
+ */
+export function recordPlayerPointsBatch(rows) {
+  const insert = db.prepare(`
+    INSERT INTO player_points_history (user_id, display_name, league_id, points, ts)
+    VALUES (@userId, @displayName, @leagueId, @points, @ts)
+    ON CONFLICT(user_id, league_id, ts) DO UPDATE SET points = excluded.points, display_name = excluded.display_name
+  `);
+  const ts = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      insert.run({ userId: row.userId, displayName: row.displayName, leagueId: row.leagueId, points: row.points, ts });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Points reading for a player within a specific league, closest to (but not more recent than) targetSecondsAgo. */
+export function getPlayerPointsNear(userId, leagueId, targetSecondsAgo) {
+  const cutoff = Math.floor(Date.now() / 1000) - targetSecondsAgo;
+  return db.prepare(`
+    SELECT * FROM player_points_history
+    WHERE user_id = ? AND league_id = ? AND ts <= ?
+    ORDER BY ts DESC LIMIT 1
+  `).get(userId, leagueId, cutoff);
+}
+
+/** All current (most recent ts) member rows for a given league, one per player. */
+export function getLatestPlayerPointsForLeague(leagueId) {
+  return db.prepare(`
+    SELECT p.* FROM player_points_history p
+    INNER JOIN (
+      SELECT user_id, MAX(ts) as max_ts FROM player_points_history WHERE league_id = ? GROUP BY user_id
+    ) latest ON p.user_id = latest.user_id AND p.ts = latest.max_ts
+    WHERE p.league_id = ?
+  `).all(leagueId, leagueId);
+}
+
+/** Prune player points history older than N seconds (default: keep 26h). */
+export function pruneOldPlayerPointsHistory(keepSeconds = 26 * 3600) {
+  const cutoff = Math.floor(Date.now() / 1000) - keepSeconds;
+  db.prepare(`DELETE FROM player_points_history WHERE ts < ?`).run(cutoff);
+}
+
+/** All history rows for a player within a league over the last N seconds, oldest first. */
+export function getPlayerPointsHistory(userId, leagueId, windowSeconds) {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
+  return db.prepare(`
+    SELECT * FROM player_points_history
+    WHERE user_id = ? AND league_id = ? AND ts >= ?
+    ORDER BY ts ASC
+  `).all(userId, leagueId, cutoff);
 }
 
 export function setRankingsMeta(key, value) {

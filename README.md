@@ -31,13 +31,15 @@ has passed, the bot shows "collecting data" instead of a rate.
 | `/stopmonitoringleague [channel:#channel]` | Stop tracking and clear that channel's history. Requires "Manage Server" permission. |
 | `/listmonitoredleagues` | List every league currently tracked in the server. |
 | `/leagueinfo league:<name>` | One-off lookup — current rank, points, and members, no tracking started. |
-| `/playerinfo player:<name>` | Look up a member of any league tracked in this server by (partial) display name — shows points, hourly rate, in-league rank, and global rank if they're in a top-1,000 league. |
+| `/leaguesnapshot league:<name>` | Snapshot of any of the top 1,000 leagues (not just ones actively tracked), pulled from the last hourly scan. Shows points, rate, rank, contributions, and a graph — same style as the tracked embed, but a point-in-time snapshot rather than a live-updating message. |
+| `/playerinfo name:<username or display name>` | Look up a player by username or display name. Checks, in order: leagues tracked in this server (live data), the top-1,000 league rankings (hourly snapshot), then falls back to a direct PS99 profile lookup by exact username for anyone else. |
 
 You can track **multiple leagues at once**, one per channel — run
 `/startmonitoringleague` in as many channels as you like.
 
 Each tracked embed also shows, once an hour of history exists:
 - 🎯 **Milestones** — ETA to reach top 100 / top 50 / top 10 (auto-hides ranks already passed)
+- 🏁 **Projected at Battle End** — an estimate of where your league would land if its current rate holds until the battle ends (Saturday 2am AEST, when battles reliably reset), including a rough placement bracket (e.g. "top 50") derived the same way as the milestone ETAs. This is explicitly a projection assuming steady rates, not a guarantee.
 - ⏱️ **Next Update** — a live Discord relative-timestamp counting down to the
   next 10-minute refresh
 
@@ -88,6 +90,11 @@ into a small history table — at no extra API cost, since it reuses data the
 job already fetches — which is what lets the bot compute a real hourly rate
 for any of those leagues, not just the one actively being tracked. That
 league-rate data is what powers the two-body ETA math described above.
+
+It also records **each individual member's** points the same way, which is
+what `/leaguesnapshot` and the per-member rates in `/playerinfo` are built
+on — again no extra API cost, since `PointContributions` is already being
+fetched for the player-rankings pass.
 
 Why top 1,000 and not every league: the PS99 API only returns individual member
 contributions from the *per-league detail endpoint* — there's no bulk
@@ -158,6 +165,15 @@ you deploy without one, Railway's filesystem is ephemeral and the SQLite file
 still work, it would just "forget" history and need another hour to build up
 hourly rates again after each restart.
 
+**Do not delete `nixpacks.toml`.** It installs system libraries (cairo,
+pango, fontconfig, and others) that the `canvas` package needs at runtime to
+render the member-comparison graph. Without it, Railway's default build image
+is missing shared libraries that crash the bot on startup with
+`ERR_DLOPEN_FAILED` — even though `npm install` itself succeeds fine, since
+the crash only happens when the graph-rendering code actually loads. This was
+hit and fixed directly against real Railway deploy logs; see the comments in
+that file for the specific error messages if it ever needs revisiting.
+
 ## Notes & limitations
 
 - Member points come from the league's `PointContributions` — the API notes
@@ -174,21 +190,35 @@ hourly rates again after each restart.
   containers (like Railway's build image) often ship with **no fonts
   installed at all** — without a bundled font, chart text renders as empty
   boxes. Don't delete the `assets/fonts` folder.
-- `/playerinfo` only searches **members of leagues currently tracked in this
-  server** — it doesn't call any external "search for a player by name"
-  endpoint. An earlier version tried that (a `/leagueplayersearch` command
-  hitting a guessed `/v1/players?query=` endpoint) and it turned out to be
-  broken — the PS99 API rejected the request rather than returning results.
-  Rather than keep guessing at an unverified endpoint, `/playerinfo` was
-  rebuilt to only use data the bot already reliably has: the member rosters
-  from its own tracked-league polling. This is strictly more reliable (no
-  external search dependency at all) at the cost of only covering players in
-  leagues someone has actually run `/startmonitoringleague` on in that server.
-- `/playerinfo`'s global rank field only covers players in the **top 1,000
-  leagues** (refreshed hourly) — it can't show a global rank for players in
+- `/playerinfo` checks three sources in order, falling through only if the
+  previous one finds nothing: (1) leagues actively tracked in that server —
+  the most reliable, live data; (2) the hourly top-1,000 league rankings scan
+  — not live, but covers any player in a genuinely competitive league even if
+  nobody's tracking it; (3) a direct PS99 profile lookup by exact username.
+  Tiers 1 and 2 match on username **or** display name, partial or full,
+  case-insensitive. Tier 3 needs an **exact** username (not display name, not
+  partial) and only returns data if that player has made their profile
+  public — the bot can't search by display name at that tier since there's no
+  confirmed PS99 search endpoint for it (an earlier attempt at a `/leagueplayersearch`
+  command guessed at one and it turned out to be broken; the API rejected the
+  request rather than returning results). Tier 3 itself is a best-effort
+  implementation of a pattern confirmed directly from the official API's
+  quickstart docs (`/v1/players/{username}?include=profile`), but the exact
+  field names returned inside a public profile haven't been confirmed against
+  a live response, so `/playerinfo` displays whatever fields actually come
+  back rather than assuming specific ones — if a lookup succeeds but shows
+  unexpected or missing fields, that's the part to sanity-check first.
+- `/playerinfo`'s tier-2 global rank only covers players in the **top 1,000
+  leagues** (refreshed hourly) — it can't show a rank for players in
   smaller/lower leagues, since the PS99 API has no bulk endpoint for
   individual player stats and pulling every league would take hours per
   rebuild.
+- `/leaguesnapshot` shows data from the **last hourly rankings scan**, not a
+  live poll — the header stats (points, rank) come from a fresh API call when
+  you run the command, but member rates and the graph come from stored
+  history, so they're only as fresh as the most recent hourly job run. If the
+  bot has been running less than ~2 hours, rates and the graph may be
+  unavailable or sparse; that's expected, not a bug.
 - The graph keeps the last 24 hours of snapshots per channel; older rows are
   pruned automatically on each poll to keep the database small.
 - If a tracked league is renamed, disbanded, or otherwise disappears from the

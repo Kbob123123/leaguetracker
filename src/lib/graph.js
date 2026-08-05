@@ -27,6 +27,21 @@ chartCanvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: '
 const MEMBER_COLORS = ['#5865F2', '#57F287', '#FEE75C', '#ED4245', '#EB459E'];
 
 /**
+ * Same as renderMemberGraph, but takes pre-shaped { ts, members: [{userId,
+ * displayName, points}] } objects directly instead of DB snapshot rows with
+ * a members_json string column. Used by /leaguesnapshot, which sources
+ * history from player_points_history (a different table/shape) rather than
+ * the channel-tracking snapshots table.
+ */
+export async function renderMemberGraphFromPoints(pointsHistory, leagueName) {
+  if (!pointsHistory.length) return null;
+  return renderMemberGraph(
+    pointsHistory.map((p) => ({ ts: p.ts, members_json: JSON.stringify(p.members) })),
+    leagueName
+  );
+}
+
+/**
  * Build a PNG buffer plotting each member's points over the retained snapshot
  * history. `snapshots` is an array of DB rows (oldest first), each with a
  * parsed members_json of [{userId, displayName, points}].

@@ -122,4 +122,27 @@ export async function getLeagueAtRank(rank) {
   return data.leagues[indexOnPage] ?? null;
 }
 
+/**
+ * Fetch a public player profile by exact Roblox username (confirmed working
+ * pattern from the official PS99 API quickstart docs — usernames are used
+ * directly as the slug, e.g. /v1/players/chickenputty). Returns:
+ *   - { available: true, ...profileFields } if the player exists and has
+ *     made their profile public
+ *   - { available: false, reason } if the player exists but the profile view
+ *     isn't public (per docs, this is a normal HTTP 200 response, not an error)
+ *   - null if the player/username doesn't exist at all (HTTP 404)
+ */
+export async function getPlayerProfile(username) {
+  try {
+    const data = await get(`/v1/players/${encodeURIComponent(username)}?include=profile`);
+    const profile = data?.profile;
+    if (!profile) return null;
+    if (profile.available === false) return { available: false, reason: profile.reason || 'not_public' };
+    return { available: true, ...profile };
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
 export { Ps99ApiError };

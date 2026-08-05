@@ -1,5 +1,12 @@
 import { getLeaguesPage, getLeagueDetail } from './ps99Api.js';
-import { replacePlayerRankings, setRankingsMeta, recordLeaguePointsBatch, pruneOldLeaguePointsHistory } from './db.js';
+import {
+  replacePlayerRankings,
+  setRankingsMeta,
+  recordLeaguePointsBatch,
+  pruneOldLeaguePointsHistory,
+  recordPlayerPointsBatch,
+  pruneOldPlayerPointsHistory,
+} from './db.js';
 import { resolveDisplayNames } from './robloxNames.js';
 
 // How many top leagues (by Points) to pull individual player contributions
@@ -78,6 +85,13 @@ export async function rebuildPlayerRankings() {
   // Step 3: resolve any numeric-fallback display names in bulk before storing,
   // same as the tracked-league poller does.
   const resolved = await resolveDisplayNames(allPlayers);
+
+  // Record per-member history too (for /leaguesnapshot and per-member rates
+  // in /playerinfo) — reuses the same data fetched above, no extra API calls.
+  recordPlayerPointsBatch(
+    resolved.map((p) => ({ userId: p.userId, displayName: p.displayName, leagueId: p.leagueId, points: p.points }))
+  );
+  pruneOldPlayerPointsHistory();
 
   // A player could theoretically appear more than once if they're in a
   // league's contributions under edge-case data quirks — keep the higher-points entry.
