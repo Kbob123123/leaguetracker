@@ -301,6 +301,22 @@ export function pruneOldLeaguePointsHistory(keepSeconds = 26 * 3600) {
 }
 
 /**
+ * Distinct league IDs whose rank (as of the last hourly rankings job run)
+ * falls within [minRank, maxRank] inclusive. Used to build a "neighborhood"
+ * of leagues around a milestone rank, so a rate estimate can be smoothed
+ * across several leagues instead of relying on one league's potentially
+ * noisy single-hour reading (e.g. a quiet hour for the exact rank-100 league
+ * shouldn't make "time to reach top 100" look artificially fast).
+ */
+export function getLeagueIdsNearRank(minRank, maxRank) {
+  return db.prepare(`
+    SELECT DISTINCT league_id, league_name, league_rank FROM player_rankings
+    WHERE league_rank BETWEEN ? AND ?
+    ORDER BY league_rank ASC
+  `).all(minRank, maxRank);
+}
+
+/**
  * Record a batch of (player, league, points) readings at the current time,
  * one transaction. Called once per hourly rankings job run for every member
  * of every top-N league — reuses PointContributions data already fetched for

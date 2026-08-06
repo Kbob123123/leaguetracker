@@ -1,12 +1,13 @@
 import { EmbedBuilder } from 'discord.js';
 import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
 import { nextBattleEndUnix, projectPointsAtBattleEnd, projectPlacementBracket } from './battleTimer.js';
+import { getPlayerRanking } from './db.js';
 
 const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
 const COLOR_NEUTRAL = 0x5865f2; // discord blurple — steady / no clear trend yet
 const COLOR_LOSING = 0xed4245; // red — falling behind the league ahead
 
-const MILESTONE_ORDER = [100, 50, 10];
+const MILESTONE_ORDER = [250, 100, 50, 10];
 
 /**
  * Build the status embed for a tracked league.
@@ -182,7 +183,11 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
 
   const medals = ['🥇', '🥈', '🥉', '🏅'];
   const memberLines = memberRates
-    .map((m, i) => `${medals[i] ?? '▫️'} **${m.displayName}** — ${formatPoints(m.points)} pts  ${trendArrow(m.rate)} ${formatRate(m.rate)}`)
+    .map((m, i) => {
+      const globalRank = getPlayerRanking(m.userId);
+      const rankTag = globalRank ? ` \`#${globalRank.globalRank}\`` : '';
+      return `${medals[i] ?? '▫️'} **${m.displayName}**${rankTag} — ${formatPoints(m.points)} pts  ${trendArrow(m.rate)} ${formatRate(m.rate)}`;
+    })
     .join('\n');
 
   embed.addFields({
@@ -253,6 +258,13 @@ function buildSummaryLine({ neighbors, leagueRate, aheadResult }) {
  * target's own rate is known; falls back to treating the target as
  * stationary only when we genuinely don't have their rate, and flags that
  * fallback explicitly via `oneSided` so the UI can say so.
+ *
+ * Note: for milestones, `targetRate` here isn't necessarily one specific
+ * league's own rate — poller.js computes it as an average across several
+ * leagues clustered around that rank, specifically to avoid one league's
+ * noisy single-hour reading (e.g. a quiet hour) producing a misleadingly
+ * fast or slow ETA. This function doesn't need to know that distinction; it
+ * just uses whatever rate it's given.
  *
  * Returns:
  *   - null if the chaser's own rate is unknown (still collecting data)

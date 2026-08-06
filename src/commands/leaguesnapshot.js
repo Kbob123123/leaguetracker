@@ -3,6 +3,7 @@ import { getLeagueDetail, findLeagueNeighbors } from '../lib/ps99Api.js';
 import { getLatestPlayerPointsForLeague, getPlayerPointsNear, getPlayerPointsHistory, getRankingsMeta } from '../lib/db.js';
 import { hourlyRate, formatPoints, formatRate } from '../lib/rates.js';
 import { renderMemberGraphFromPoints } from '../lib/graph.js';
+import { resolveDisplayNames } from '../lib/robloxNames.js';
 
 const HOUR_SECONDS = 3600;
 
@@ -27,6 +28,14 @@ export async function execute(interaction) {
   const neighbors = await findLeagueNeighbors(league);
   const latestMembers = getLatestPlayerPointsForLeague(league.ID);
   const lastRebuiltAt = getRankingsMeta('last_rebuilt_at');
+
+  let ownerName = league.Owner?.DisplayName || null;
+  if (league.Owner?.UserID && (!ownerName || ownerName === String(league.Owner.UserID))) {
+    const [resolvedOwner] = await resolveDisplayNames([
+      { userId: league.Owner.UserID, displayName: ownerName },
+    ]);
+    ownerName = resolvedOwner.displayName;
+  }
 
   // League-level rate: sum of member rates, since we don't store a separate
   // league-total snapshot for this command and this is exact.
@@ -60,7 +69,7 @@ export async function execute(interaction) {
     `**Global Rank:** ${neighbors.rank ? `#${neighbors.rank} of ${neighbors.total.toLocaleString()}` : 'N/A'}`,
     `**Members:** ${memberCount}/${league.MemberCapacity ?? 4}`,
   ];
-  if (league.Owner?.DisplayName) headerLines.push(`**Owner:** ${league.Owner.DisplayName}`);
+  if (ownerName) headerLines.push(`**Owner:** ${ownerName}`);
   headerLines.push(`**Stats Snapshot:** ${snapshotAge}`);
 
   const embed = new EmbedBuilder()
@@ -75,11 +84,14 @@ export async function execute(interaction) {
   }
 
   // --- Contributions: numbered list, current totals + rate from our history ---
-  const withRates = contributions
+  const rawContributions = contributions.map((c) => ({ userId: c.UserID, displayName: c.DisplayName, points: c.Points }));
+  const resolvedContributions = await resolveDisplayNames(rawContributions);
+
+  const withRates = resolvedContributions
     .map((c) => {
-      const hourAgo = getPlayerPointsNear(String(c.UserID), league.ID, HOUR_SECONDS);
-      const rate = hourAgo ? hourlyRate(hourAgo.points, hourAgo.ts, c.Points, Math.floor(Date.now() / 1000)) : null;
-      return { displayName: c.DisplayName, points: c.Points, rate };
+      const hourAgo = getPlayerPointsNear(String(c.userId), league.ID, HOUR_SECONDS);
+      const rate = hourAgo ? hourlyRate(hourAgo.points, hourAgo.ts, c.points, Math.floor(Date.now() / 1000)) : null;
+      return { displayName: c.displayName, points: c.points, rate };
     })
     .sort((a, b) => b.points - a.points);
 

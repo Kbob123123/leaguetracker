@@ -35,13 +35,24 @@ has passed, the bot shows "collecting data" instead of a rate.
 | `/playerinfo name:<username or display name>` | Look up a player by username or display name. Checks, in order: leagues tracked in this server (live data), the top-1,000 league rankings (hourly snapshot), then falls back to a direct PS99 profile lookup by exact username for anyone else. |
 
 You can track **multiple leagues at once**, one per channel — run
-`/startmonitoringleague` in as many channels as you like.
+`/startmonitoringleague` in as many channels as you like. The first tracked
+embed posts **immediately** when you run the command (it reuses the same
+code path as the recurring 10-minute poller), not on a delay waiting for the
+next scheduled poll tick.
 
 Each tracked embed also shows, once an hour of history exists:
-- 🎯 **Milestones** — ETA to reach top 100 / top 50 / top 10 (auto-hides ranks already passed)
+- 🎯 **Milestones** — ETA to reach top 250 / top 100 / top 50 / top 10 (auto-hides ranks already passed)
 - 🏁 **Projected at Battle End** — an estimate of where your league would land if its current rate holds until the battle ends (Saturday 2am AEST, when battles reliably reset), including a rough placement bracket (e.g. "top 50") derived the same way as the milestone ETAs. This is explicitly a projection assuming steady rates, not a guarantee.
 - ⏱️ **Next Update** — a live Discord relative-timestamp counting down to the
   next 10-minute refresh
+
+Each member in the list also shows a small `#1234` tag next to their name if
+they're currently in the top-1,000 league rankings (the same data source
+`/playerinfo` uses) — this is their overall rank among tracked top-league
+players, not their rank within the 4-person league. It only appears once the
+hourly rankings job has scanned at least once and found that specific
+player; members outside the top 1,000 leagues just won't have a tag, which is
+expected rather than a bug.
 
 ### How targets stay live without any recalculation delay
 
@@ -77,6 +88,30 @@ Two honest limitations worth knowing:
 - This only ever affects the *ETA number*. Your own tracked league's hourly
   rate always needs its own one-time hour of warm-up per channel, same as
   before — that part hasn't changed.
+
+### Milestone rates are averaged across nearby leagues, not just the one at that exact rank
+
+For the "league directly ahead of you" target, the rate really is that one
+specific league's own rate — you're racing that exact league, so its own
+pace is the correct number to use.
+
+Milestones (top 250/100/50/10) are different: they're not racing one
+specific league, they're asking "how fast do I need to grow to *hold* this
+rank tier." Using only the exact league sitting at, say, rank 100 right now
+caused a real problem — any single league's hour-to-hour rate is noisy (one
+quiet hour with members offline can make a league look like it's barely
+moving), so if that happened to be the exact rank-100 league at poll time,
+the bot would show a falsely fast ETA that didn't account for the dozens of
+other leagues clustered around that rank still climbing normally.
+
+The fix: milestone rates are now averaged across the ~20 leagues ranked
+closest to that milestone (±10 ranks), using data the hourly rankings job
+already collects — no extra API calls. One or two leagues having a quiet
+hour gets smoothed out by the rest of the cluster, so the rate reflects the
+real, sustained pace needed to hold that tier rather than one league's
+momentary blip. Needs at least 2 leagues in that window with a computable
+rate; falls back to the same "estimate — target rate unknown" wording if not
+enough data is available yet.
 
 ## Global player rankings & league-rate tracking
 
@@ -194,7 +229,12 @@ that file for the specific error messages if it ever needs revisiting.
   makes a follow-up call to Roblox's public users API to fill in the real
   name, caching results for 6 hours so it doesn't re-resolve names every poll.
   If that lookup also fails, the numeric ID is shown as a last resort rather
-  than blocking the update.
+  than blocking the update. This resolution step has to be applied everywhere
+  `PointContributions`/`Owner` data from the PS99 API is displayed — it was
+  originally only wired into the tracked-channel poller and got missed in
+  `/leaguesnapshot` for a while, which is why an early version of that
+  command showed raw numeric IDs instead of names. Worth double-checking if
+  a future command ever displays league member/owner data directly.
 - The graph bundles its own font (`assets/fonts/DejaVuSans*.ttf`) and
   registers it explicitly with Chart.js. This matters because minimal Linux
   containers (like Railway's build image) often ship with **no fonts

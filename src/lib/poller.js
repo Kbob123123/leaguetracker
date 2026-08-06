@@ -11,6 +11,7 @@ import {
   setMessageId,
   getLeaguePointsNear,
   getLatestLeaguePoints,
+  getLeagueIdsNearRank,
 } from './db.js';
 import { buildLeagueEmbed } from './embed.js';
 import { renderMemberGraph } from './graph.js';
@@ -19,7 +20,7 @@ import { hourlyRate } from './rates.js';
 
 const HOUR_SECONDS = 3600;
 const GRAPH_WINDOW_SECONDS = 24 * HOUR_SECONDS;
-export const MILESTONE_RANKS = [100, 50, 10];
+export const MILESTONE_RANKS = [250, 100, 50, 10];
 
 /**
  * Look up a league's own hourly rate from league_points_history (populated
@@ -42,6 +43,48 @@ function withRate(leagueObj) {
   return { ...leagueObj, Rate: getLeagueRate(leagueObj.ID) };
 }
 
+// How many leagues on each side of a milestone rank to average when
+// estimating "the pace needed to hold this rank". E.g. for rank 100 with a
+// window of 10, this averages leagues ranked 90-110 (21 leagues total).
+const MILESTONE_RATE_WINDOW = 10;
+
+/**
+ * Estimate the hourly rate needed to reach/hold a given rank, by averaging
+ * the hourly rate of several leagues clustered around that rank rather than
+ * relying on a single league's own last-hour reading.
+ *
+ * This exists because any one league's hour-to-hour rate is noisy — a league
+ * can have a quiet hour (members offline, nobody grinding) that makes them
+ * look temporarily slow, which would make "time to reach top 100" look
+ * artificially fast if that one league happened to be the exact rank-100
+ * league at poll time. Averaging across ~20 nearby leagues means one or two
+ * quiet leagues get smoothed out by the rest of the cluster, giving a
+ * rate that better reflects the real, sustained pace of that rank tier.
+ *
+ * Returns null if fewer than 2 leagues in the window have a computable rate
+ * (not enough data to average yet — e.g. early after bot startup).
+ */
+function getNeighborhoodRate(centerRank) {
+  const minRank = Math.max(1, centerRank - MILESTONE_RATE_WINDOW);
+  const maxRank = centerRank + MILESTONE_RATE_WINDOW;
+  const nearbyLeagues = getLeagueIdsNearRank(minRank, maxRank);
+
+  const rates = [];
+  for (const league of nearbyLeagues) {
+    const rate = getLeagueRate(league.league_id);
+    if (rate != null) rates.push(rate);
+  }
+
+  if (rates.length < 2) return null;
+  return rates.reduce((sum, r) => sum + r, 0) / rates.length;
+}
+
+/** Like withRate, but for milestone targets: uses a neighborhood-averaged rate instead of the single target league's own noisy hourly rate. */
+function withNeighborhoodRate(leagueObj, rank) {
+  if (!leagueObj) return null;
+  return { ...leagueObj, Rate: getNeighborhoodRate(rank) };
+}
+
 export async function pollAllTrackedChannels(client) {
   const tracked = getAllTrackedChannels();
 
@@ -54,7 +97,7 @@ export async function pollAllTrackedChannels(client) {
   }
 }
 
-async function pollOneChannel(client, trackedRow) {
+export async function pollOneChannel(client, trackedRow) {
   const { channel_id: channelId, league_name: leagueName, started_at: startedAt } = trackedRow;
 
   const league = await getLeagueDetail(leagueName);
@@ -88,7 +131,7 @@ async function pollOneChannel(client, trackedRow) {
   };
   const milestonesWithRates = {};
   for (const [rank, target] of Object.entries(milestones)) {
-    milestonesWithRates[rank] = withRate(target);
+    milestonesWithRates[rank] = withNeighborhoodRate(target, Number(rank));
   }
 
   const currentMembers = await resolveDisplayNames(buildMemberPointsList(league));
