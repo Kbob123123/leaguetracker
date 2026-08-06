@@ -126,6 +126,16 @@ npm run deploy-commands   # registers the slash commands with Discord
 npm start
 ```
 
+`npm run deploy-commands` automatically runs a check first
+(`npm run lint-commands`) that catches command/option descriptions over
+Discord's 100-character limit before anything gets sent to Discord or
+deployed. This exists because of a real incident: an oversized description
+once crashed the bot on every single startup on Railway, since
+`SlashCommandBuilder` validates description length the instant it's called —
+during module loading, before any of the bot's own error handling can catch
+it. If you ever add a new command, run `npm run lint-commands` (or just
+`npm run deploy-commands`, which includes it) before deploying.
+
 ### Getting a bot token
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.

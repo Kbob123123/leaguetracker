@@ -8,7 +8,7 @@ const HOUR_SECONDS = 3600;
 
 export const data = new SlashCommandBuilder()
   .setName('leaguesnapshot')
-  .setDescription('Snapshot of any top-1,000 league from the last hourly scan — not live-updating like /startmonitoringleague.')
+  .setDescription('Snapshot of any top-1,000 league from the last hourly scan (not live-updating).')
   .addStringOption((opt) =>
     opt.setName('league').setDescription('Exact league name (case-insensitive)').setRequired(true)
   );

@@ -25,12 +25,27 @@ client.commands = new Collection();
 
 const commandsDir = path.join(__dirname, 'commands');
 for (const file of fs.readdirSync(commandsDir).filter((f) => f.endsWith('.js'))) {
-  const mod = await import(pathToFileURL(path.join(commandsDir, file)).href);
-  if (mod.data && mod.execute) {
-    client.commands.set(mod.data.name, mod);
-  } else {
-    console.warn(`[commands] Skipping ${file}: missing data/execute export.`);
+  try {
+    const mod = await import(pathToFileURL(path.join(commandsDir, file)).href);
+    if (mod.data && mod.execute) {
+      client.commands.set(mod.data.name, mod);
+    } else {
+      console.warn(`[commands] Skipping ${file}: missing data/execute export.`);
+    }
+  } catch (err) {
+    // A command file can throw at IMPORT time, not just at runtime — e.g.
+    // SlashCommandBuilder validates description length (Discord's 100-char
+    // limit) the instant .setDescription() is called, which happens at
+    // module-evaluation time for our top-level `export const data = ...`
+    // pattern. Without this try/catch, one oversized description crashes
+    // the entire bot process on every single startup (this happened once —
+    // see git history). Skip the broken command and keep the rest running.
+    console.error(`[commands] FAILED to load ${file} — this command will be unavailable:`, err.message);
   }
+}
+
+if (client.commands.size === 0) {
+  console.error('[commands] No commands loaded successfully — check the errors above.');
 }
 
 client.on('interactionCreate', async (interaction) => {
