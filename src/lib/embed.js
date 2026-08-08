@@ -2,6 +2,7 @@ import { EmbedBuilder } from 'discord.js';
 import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
 import { nextBattleEndUnix, projectPointsAtBattleEnd, projectPlacementBracket } from './battleTimer.js';
 import { getPlayerRanking } from './db.js';
+import { formatName } from './robloxNames.js';
 
 const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
 const COLOR_NEUTRAL = 0x5865f2; // discord blurple — steady / no clear trend yet
@@ -186,7 +187,7 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     .map((m, i) => {
       const globalRank = getPlayerRanking(m.userId);
       const rankTag = globalRank ? ` \`#${globalRank.globalRank}\`` : '';
-      return `${medals[i] ?? '▫️'} **${m.displayName}**${rankTag} — ${formatPoints(m.points)} pts  ${trendArrow(m.rate)} ${formatRate(m.rate)}`;
+      return `${medals[i] ?? '▫️'} **${formatName(m)}**${rankTag} — ${formatPoints(m.points)} pts  ${trendArrow(m.rate)} ${formatRate(m.rate)}`;
     })
     .join('\n');
 

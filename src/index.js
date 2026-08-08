@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pollAllTrackedChannels } from './lib/poller.js';
 import { rebuildPlayerRankings } from './lib/rankingsJob.js';
+import { updateAllTop10Channels } from './lib/top10.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -80,6 +81,13 @@ async function runPollTick() {
     await pollAllTrackedChannels(client);
   } catch (err) {
     console.error('[poller] Unexpected top-level error:', err);
+  }
+  try {
+    // Separate try/catch: a failure updating leaderboard channels must not
+    // stop tracked-channel polling from having run, and vice versa.
+    await updateAllTop10Channels(client);
+  } catch (err) {
+    console.error('[top10] Unexpected top-level error:', err);
   } finally {
     pollInFlight = false;
   }

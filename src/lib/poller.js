@@ -12,10 +12,11 @@ import {
   getLeaguePointsNear,
   getLatestLeaguePoints,
   getLeagueIdsNearRank,
+  recordDailyPointsBatch,
 } from './db.js';
 import { buildLeagueEmbed } from './embed.js';
 import { renderMemberGraph } from './graph.js';
-import { resolveDisplayNames } from './robloxNames.js';
+import { resolveNames, formatName } from './robloxNames.js';
 import { hourlyRate } from './rates.js';
 
 const HOUR_SECONDS = 3600;
@@ -134,7 +135,7 @@ export async function pollOneChannel(client, trackedRow) {
     milestonesWithRates[rank] = withNeighborhoodRate(target, Number(rank));
   }
 
-  const currentMembers = await resolveDisplayNames(buildMemberPointsList(league));
+  const currentMembers = await resolveNames(buildMemberPointsList(league));
 
   addSnapshot({
     channelId,
@@ -148,6 +149,12 @@ export async function pollOneChannel(client, trackedRow) {
   });
 
   pruneOldSnapshots(channelId);
+
+  // Record daily history for the tracked league here as well as in the
+  // rankings job. The job only covers the top 1,000, so without this a league
+  // someone is actively tracking from further down the board would have no
+  // long-term history at all — which is exactly the league they care about.
+  recordDailyPointsBatch([{ leagueId: league.ID, leagueName: league.Name, points: league.Points }]);
 
   const latestSnapshot = getLatestSnapshot(channelId);
   const hourAgoSnapshot = getSnapshotNear(channelId, HOUR_SECONDS);

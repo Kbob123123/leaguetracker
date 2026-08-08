@@ -1,7 +1,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { getLeagueDetail, findLeagueNeighbors } from '../lib/ps99Api.js';
 import { formatPoints } from '../lib/rates.js';
-import { resolveDisplayNames } from '../lib/robloxNames.js';
+import { resolveNames, formatName } from '../lib/robloxNames.js';
 
 export const data = new SlashCommandBuilder()
   .setName('leagueinfo')
@@ -28,7 +28,7 @@ export async function execute(interaction) {
     displayName: m.DisplayName,
     points: m.Points,
   }));
-  const members = await resolveDisplayNames(rawMembers);
+  const members = await resolveNames(rawMembers);
   members.sort((a, b) => b.points - a.points);
 
   const embed = new EmbedBuilder()
@@ -65,7 +65,7 @@ export async function execute(interaction) {
 
   embed.addFields({ name: '\u200b', value: '\u200b', inline: true });
 
-  const memberLines = members.map((m) => `**${m.displayName}** — ${formatPoints(m.points)} pts`).join('\n');
+  const memberLines = members.map((m) => `**${formatName(m)}** — ${formatPoints(m.points)} pts`).join('\n');
   embed.addFields({
     name: `Members (${members.length}/${league.MemberCapacity ?? 4})`,
     value: memberLines || 'No contribution data.',

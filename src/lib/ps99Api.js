@@ -122,27 +122,18 @@ export async function getLeagueAtRank(rank) {
   return data.leagues[indexOnPage] ?? null;
 }
 
-/**
- * Fetch a public player profile by exact Roblox username (confirmed working
- * pattern from the official PS99 API quickstart docs — usernames are used
- * directly as the slug, e.g. /v1/players/chickenputty). Returns:
- *   - { available: true, ...profileFields } if the player exists and has
- *     made their profile public
- *   - { available: false, reason } if the player exists but the profile view
- *     isn't public (per docs, this is a normal HTTP 200 response, not an error)
- *   - null if the player/username doesn't exist at all (HTTP 404)
- */
-export async function getPlayerProfile(username) {
-  try {
-    const data = await get(`/v1/players/${encodeURIComponent(username)}?include=profile`);
-    const profile = data?.profile;
-    if (!profile) return null;
-    if (profile.available === false) return { available: false, reason: profile.reason || 'not_public' };
-    return { available: true, ...profile };
-  } catch (err) {
-    if (err.status === 404) return null;
-    throw err;
-  }
-}
+// REMOVED: getPlayerProfile(username), which called /v1/players/{username}.
+//
+// That endpoint does not exist. It returns HTTP 404 for every username,
+// including known-valid ones — verified directly against the live API. It was
+// written from a docs quickstart example that evidently no longer reflects the
+// deployed API, and because the old /playerinfo only reached it as a last
+// resort after two other tiers had already missed, it always looked like an
+// ordinary "player not found" rather than a broken route.
+//
+// The practical consequence: the PS99 API offers NO per-player endpoint of any
+// kind. Player stats can only be derived from league/clan PointContributions,
+// which is why player lookup is limited to the top-1,000 scanned leagues/clans.
+// Don't re-add a direct profile lookup without testing the route first.
 
 export { Ps99ApiError };

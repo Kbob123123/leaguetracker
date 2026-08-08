@@ -3,7 +3,7 @@ import { getLeagueDetail, findLeagueNeighbors } from '../lib/ps99Api.js';
 import { getLatestPlayerPointsForLeague, getPlayerPointsNear, getPlayerPointsHistory, getRankingsMeta } from '../lib/db.js';
 import { hourlyRate, formatPoints, formatRate } from '../lib/rates.js';
 import { renderMemberGraphFromPoints } from '../lib/graph.js';
-import { resolveDisplayNames } from '../lib/robloxNames.js';
+import { resolveNames, formatName } from '../lib/robloxNames.js';
 
 const HOUR_SECONDS = 3600;
 
@@ -31,10 +31,10 @@ export async function execute(interaction) {
 
   let ownerName = league.Owner?.DisplayName || null;
   if (league.Owner?.UserID && (!ownerName || ownerName === String(league.Owner.UserID))) {
-    const [resolvedOwner] = await resolveDisplayNames([
+    const [resolvedOwner] = await resolveNames([
       { userId: league.Owner.UserID, displayName: ownerName },
     ]);
-    ownerName = resolvedOwner.displayName;
+    ownerName = formatName(resolvedOwner);
   }
 
   // League-level rate: sum of member rates, since we don't store a separate
@@ -85,18 +85,18 @@ export async function execute(interaction) {
 
   // --- Contributions: numbered list, current totals + rate from our history ---
   const rawContributions = contributions.map((c) => ({ userId: c.UserID, displayName: c.DisplayName, points: c.Points }));
-  const resolvedContributions = await resolveDisplayNames(rawContributions);
+  const resolvedContributions = await resolveNames(rawContributions);
 
   const withRates = resolvedContributions
     .map((c) => {
       const hourAgo = getPlayerPointsNear(String(c.userId), league.ID, HOUR_SECONDS);
       const rate = hourAgo ? hourlyRate(hourAgo.points, hourAgo.ts, c.points, Math.floor(Date.now() / 1000)) : null;
-      return { displayName: c.displayName, points: c.points, rate };
+      return { username: c.username, displayName: c.displayName, points: c.points, rate };
     })
     .sort((a, b) => b.points - a.points);
 
   const contributionLines = withRates
-    .map((m, i) => `**#${i + 1}** ${m.displayName} · ${formatPoints(m.points)} pts · ${formatRate(m.rate)}`)
+    .map((m, i) => `**#${i + 1}** ${formatName(m)} · ${formatPoints(m.points)} pts · ${formatRate(m.rate)}`)
     .join('\n');
 
   embed.addFields({
@@ -116,7 +116,12 @@ export async function execute(interaction) {
       const rows = getPlayerPointsHistory(m.user_id, league.ID, 24 * HOUR_SECONDS);
       for (const row of rows) {
         if (!historyByTs.has(row.ts)) historyByTs.set(row.ts, []);
-        historyByTs.get(row.ts).push({ userId: row.user_id, displayName: row.display_name, points: row.points });
+        historyByTs.get(row.ts).push({
+          userId: row.user_id,
+          username: row.username,
+          displayName: row.display_name,
+          points: row.points,
+        });
       }
     }
     const pointsHistory = Array.from(historyByTs.entries())

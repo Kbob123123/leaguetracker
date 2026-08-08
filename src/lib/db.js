@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_channel_ts
 CREATE TABLE IF NOT EXISTS player_rankings (
   user_id      TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
+  username     TEXT,
   points       INTEGER NOT NULL,
   league_id    TEXT NOT NULL,
   league_name  TEXT NOT NULL,
@@ -46,6 +47,39 @@ CREATE INDEX IF NOT EXISTS idx_player_rankings_points
 CREATE TABLE IF NOT EXISTS rankings_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
+);
+
+-- Long-term history: one row per league per UTC day.
+--
+-- league_points_history above is pruned at 26 hours because it exists to
+-- compute a trailing-hour rate, and keeping hourly readings for every
+-- top-1,000 league forever would grow without bound. This table is the
+-- long-term record: a single points reading per day, which is ~365 rows per
+-- league per year — small enough to keep for months and enough resolution to
+-- show a real trend.
+--
+-- The day column is a UTC date string (YYYY-MM-DD) rather than an epoch so the
+-- primary key collapses repeated writes on the same day automatically:
+-- whichever reading lands last that day wins, giving an end-of-day value.
+CREATE TABLE IF NOT EXISTS daily_points (
+  league_id   TEXT NOT NULL,
+  league_name TEXT NOT NULL,
+  day         TEXT NOT NULL,
+  points      INTEGER NOT NULL,
+  ts          INTEGER NOT NULL,
+  PRIMARY KEY (league_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_points_league_day ON daily_points (league_id, day);
+
+-- Channels showing an auto-updating top-10 leaderboard. message_id is what
+-- makes the post edit itself in place every cycle instead of adding a new
+-- message each time — one channel holds one leaderboard, forever.
+CREATE TABLE IF NOT EXISTS top10_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id   TEXT NOT NULL,
+  message_id TEXT,
+  created_at INTEGER NOT NULL
 );
 
 -- One row per (league_id, ts) each time the hourly rankings job runs. This is
@@ -67,10 +101,11 @@ CREATE INDEX IF NOT EXISTS idx_league_points_history_league_ts
 -- One row per (user_id, league_id, ts) each hourly rankings pass. Lets the
 -- bot compute a real hourly rate for any individual member of any top-1,000
 -- league (not just members of the one channel-tracked league), which powers
--- the standalone /leaguesnapshot lookup and per-member rate in /playerinfo.
+-- the standalone /leaguesnapshot lookup and per-member rate in /leagueplayer.
 CREATE TABLE IF NOT EXISTS player_points_history (
   user_id      TEXT NOT NULL,
   display_name TEXT NOT NULL,
+  username     TEXT,
   league_id    TEXT NOT NULL,
   points       INTEGER NOT NULL,
   ts           INTEGER NOT NULL,
@@ -94,6 +129,26 @@ CREATE TABLE IF NOT EXISTS locked_targets (
   PRIMARY KEY (channel_id, target_key)
 );
 `);
+
+/**
+ * Add a column to an existing table if it isn't there yet.
+ *
+ * The CREATE TABLE statements above only run on a fresh database — SQLite
+ * ignores them entirely once the table exists, so a bot that's already been
+ * deployed (e.g. on a Railway volume) would never gain a newly added column
+ * and every query naming it would throw. This backfills those columns in
+ * place, which is why `username` is nullable: existing rows have no value for
+ * it until the next hourly rankings pass overwrites them.
+ */
+function addColumnIfMissing(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] Migrated: added ${table}.${column}`);
+}
+
+addColumnIfMissing('player_rankings', 'username', 'TEXT');
+addColumnIfMissing('player_points_history', 'username', 'TEXT');
 
 /** Insert a new tracked channel. Throws if channel_id already exists (caller should check first). */
 export function addTrackedChannel({ channelId, guildId, leagueName }) {
@@ -202,8 +257,8 @@ export function pruneOldSnapshots(channelId, keepSeconds = 26 * 3600) {
 export function replacePlayerRankings(rows) {
   const deleteAll = db.prepare(`DELETE FROM player_rankings`);
   const insert = db.prepare(`
-    INSERT INTO player_rankings (user_id, display_name, points, league_id, league_name, league_rank)
-    VALUES (@userId, @displayName, @points, @leagueId, @leagueName, @leagueRank)
+    INSERT INTO player_rankings (user_id, display_name, username, points, league_id, league_name, league_rank)
+    VALUES (@userId, @displayName, @username, @points, @leagueId, @leagueName, @leagueRank)
   `);
 
   db.exec('BEGIN');
@@ -234,14 +289,22 @@ export function getPlayerRankingsCount() {
   return count;
 }
 
-/** Search player_rankings by display name substring (case-insensitive), up to `limit` results, best points first. */
+/**
+ * Search player_rankings by username OR display name substring
+ * (case-insensitive), up to `limit` results, best points first.
+ *
+ * Matching both is the point: a player is known to their friends by their
+ * @username but shows up in-game under a display name, and either is a
+ * reasonable thing to type into /leagueplayer.
+ */
 export function getPlayerRankingByName(query, limit = 10) {
   return db.prepare(`
     SELECT * FROM player_rankings
     WHERE LOWER(display_name) LIKE '%' || LOWER(?) || '%'
+       OR LOWER(COALESCE(username, '')) LIKE '%' || LOWER(?) || '%'
     ORDER BY points DESC
     LIMIT ?
-  `).all(query, limit);
+  `).all(query, query, limit);
 }
 
 /**
@@ -324,16 +387,26 @@ export function getLeagueIdsNearRank(minRank, maxRank) {
  */
 export function recordPlayerPointsBatch(rows) {
   const insert = db.prepare(`
-    INSERT INTO player_points_history (user_id, display_name, league_id, points, ts)
-    VALUES (@userId, @displayName, @leagueId, @points, @ts)
-    ON CONFLICT(user_id, league_id, ts) DO UPDATE SET points = excluded.points, display_name = excluded.display_name
+    INSERT INTO player_points_history (user_id, display_name, username, league_id, points, ts)
+    VALUES (@userId, @displayName, @username, @leagueId, @points, @ts)
+    ON CONFLICT(user_id, league_id, ts) DO UPDATE SET
+      points = excluded.points,
+      display_name = excluded.display_name,
+      username = excluded.username
   `);
   const ts = Math.floor(Date.now() / 1000);
 
   db.exec('BEGIN');
   try {
     for (const row of rows) {
-      insert.run({ userId: row.userId, displayName: row.displayName, leagueId: row.leagueId, points: row.points, ts });
+      insert.run({
+        userId: row.userId,
+        displayName: row.displayName,
+        username: row.username ?? null,
+        leagueId: row.leagueId,
+        points: row.points,
+        ts,
+      });
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -377,6 +450,97 @@ export function getPlayerPointsHistory(userId, leagueId, windowSeconds) {
     WHERE user_id = ? AND league_id = ? AND ts >= ?
     ORDER BY ts ASC
   `).all(userId, leagueId, cutoff);
+}
+
+/* ---------------------------------------------------------------------------
+ * Long-term daily history
+ * ------------------------------------------------------------------------- */
+
+/** UTC date key (YYYY-MM-DD) for an epoch-seconds timestamp. */
+export function dayKey(ts = Math.floor(Date.now() / 1000)) {
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Record today's points for a batch of leagues.
+ *
+ * Safe to call repeatedly throughout the day — the (league_id, day) primary
+ * key means later writes overwrite earlier ones rather than accumulating, so
+ * each day ends up holding that day's final reading.
+ */
+export function recordDailyPointsBatch(rows) {
+  const ts = Math.floor(Date.now() / 1000);
+  const day = dayKey(ts);
+  const insert = db.prepare(`
+    INSERT INTO daily_points (league_id, league_name, day, points, ts)
+    VALUES (@leagueId, @leagueName, @day, @points, @ts)
+    ON CONFLICT(league_id, day) DO UPDATE SET
+      points = excluded.points,
+      league_name = excluded.league_name,
+      ts = excluded.ts
+  `);
+
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      insert.run({ leagueId: row.leagueId, leagueName: row.leagueName, day, points: row.points, ts });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Daily rows for a league over the last N days, oldest first. */
+export function getDailyHistory(leagueId, days = 30) {
+  const cutoff = dayKey(Math.floor(Date.now() / 1000) - days * 86400);
+  return db.prepare(`
+    SELECT * FROM daily_points WHERE league_id = ? AND day >= ? ORDER BY day ASC
+  `).all(leagueId, cutoff);
+}
+
+/** Find a league's stored id by name (case-insensitive), for history lookups. */
+export function findDailyLeagueByName(name) {
+  return db.prepare(`
+    SELECT league_id, league_name, MAX(day) AS latest_day FROM daily_points
+    WHERE LOWER(league_name) = LOWER(?)
+    GROUP BY league_id, league_name
+    ORDER BY latest_day DESC LIMIT 1
+  `).get(name);
+}
+
+export function pruneDailyPoints(keepDays = 180) {
+  const cutoff = dayKey(Math.floor(Date.now() / 1000) - keepDays * 86400);
+  db.prepare(`DELETE FROM daily_points WHERE day < ?`).run(cutoff);
+}
+
+/* ---------------------------------------------------------------------------
+ * Auto-updating top-10 leaderboard channels
+ * ------------------------------------------------------------------------- */
+
+export function addTop10Channel({ channelId, guildId }) {
+  db.prepare(`
+    INSERT INTO top10_channels (channel_id, guild_id, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id
+  `).run(channelId, guildId, Math.floor(Date.now() / 1000));
+}
+
+export function removeTop10Channel(channelId) {
+  db.prepare(`DELETE FROM top10_channels WHERE channel_id = ?`).run(channelId);
+}
+
+export function getAllTop10Channels() {
+  return db.prepare(`SELECT * FROM top10_channels`).all();
+}
+
+export function getTop10Channel(channelId) {
+  return db.prepare(`SELECT * FROM top10_channels WHERE channel_id = ?`).get(channelId);
+}
+
+export function setTop10MessageId(channelId, messageId) {
+  db.prepare(`UPDATE top10_channels SET message_id = ? WHERE channel_id = ?`).run(messageId, channelId);
 }
 
 export function setRankingsMeta(key, value) {

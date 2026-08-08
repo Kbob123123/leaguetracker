@@ -2,7 +2,7 @@ import { SlashCommandBuilder, PermissionFlagsBits, ChannelType } from 'discord.j
 import { getLeagueDetail, findLeagueNeighbors } from '../lib/ps99Api.js';
 import { addTrackedChannel, getTrackedChannel, addSnapshot } from '../lib/db.js';
 import { buildMemberPointsList, pollOneChannel } from '../lib/poller.js';
-import { resolveDisplayNames } from '../lib/robloxNames.js';
+import { resolveNames, formatName } from '../lib/robloxNames.js';
 
 export const data = new SlashCommandBuilder()
   .setName('startmonitoringleague')
@@ -41,7 +41,7 @@ export async function execute(interaction) {
   }
 
   const neighbors = await findLeagueNeighbors(league);
-  const members = await resolveDisplayNames(buildMemberPointsList(league));
+  const members = await resolveNames(buildMemberPointsList(league));
 
   addTrackedChannel({
     channelId: targetChannel.id,

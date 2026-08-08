@@ -32,7 +32,22 @@ has passed, the bot shows "collecting data" instead of a rate.
 | `/listmonitoredleagues` | List every league currently tracked in the server. |
 | `/leagueinfo league:<name>` | One-off lookup — current rank, points, and members, no tracking started. |
 | `/leaguesnapshot league:<name>` | Snapshot of any of the top 1,000 leagues (not just ones actively tracked), pulled from the last hourly scan. Shows points, rate, rank, contributions, and a graph — same style as the tracked embed, but a point-in-time snapshot rather than a live-updating message. |
-| `/playerinfo name:<username or display name>` | Look up a player by username or display name. Checks, in order: leagues tracked in this server (live data), the top-1,000 league rankings (hourly snapshot), then falls back to a direct PS99 profile lookup by exact username for anyone else. |
+| `/leagueplayer name:<username or display name>` | Look up a player. Checks leagues tracked in this server (live data), then the top-1,000 league rankings (hourly snapshot). Matches on **username or display name**. |
+| `/leaguetop10` | Current top 10 leagues by points, with hourly rates and overtake ETAs. |
+| `/leaguehistory league:<name> [days:7\|30\|90\|180]` | Long-term points history as a daily chart, plus total gained and average rate over the period. |
+| `/setleaguetop10 [channel:#channel]` | Set a channel to show a **self-updating** top-10 board — it edits its own message in place rather than posting a new one each cycle. Run with no channel to stop updating the current one. Requires "Manage Server". |
+
+`/leagueplayer` was renamed from `/playerinfo` so it can't be confused with
+the clan bot's `/clanplayer` — Discord scopes command names per application,
+so two bots both registering `/playerinfo` would appear as two identical
+entries in the picker, told apart only by a small avatar.
+
+**Player lookup has two tiers, not three.** An earlier version had a third
+tier that called `/v1/players/{username}` directly. That endpoint does not
+exist — it returns 404 for every username, verified against the live API. It
+has been removed. The practical consequence is that the PS99 API offers no
+per-player route at all, so player stats can only come from league
+contribution data and lookup is limited to the top-1,000 scanned leagues.
 
 You can track **multiple leagues at once**, one per channel — run
 `/startmonitoringleague` in as many channels as you like. The first tracked
@@ -146,6 +161,31 @@ always reflects a single consistent snapshot rather than a mix of old and new
 data. League points history is append-only but pruned to the last 26 hours.
 
 
+## Long-term history
+
+The hourly `league_points_history` table is pruned at 26 hours, because it
+exists only to compute a trailing-hour rate and keeping hourly readings for
+every top-1,000 league forever would grow without bound.
+
+`daily_points` is the long-term record instead: **one reading per league per
+UTC day**, kept for **180 days**. That's ~365 rows per league per year — small
+enough to retain for months, and enough resolution to show a real trend. The
+day column is a date string rather than an epoch so the primary key collapses
+repeated writes automatically: whichever reading lands last that day wins,
+giving an end-of-day value.
+
+It's written from **two** places, and both matter:
+
+- the **hourly rankings job**, covering every top-1,000 league — free, since it
+  reuses data already fetched;
+- the **10-minute poller**, for whichever league a channel is actively
+  tracking. Without this second write, a league someone is tracking from
+  outside the top 1,000 would have no long-term history at all — and that's
+  exactly the league they care about.
+
+`/leaguehistory` needs at least two days of data before it can draw a chart, so
+expect it to say "check back tomorrow" on a fresh install.
+
 ## Local setup
 
 **Requires Node.js 22.5.0 or newer** (this project uses Node's built-in
@@ -224,17 +264,24 @@ that file for the specific error messages if it ever needs revisiting.
 - Member points come from the league's `PointContributions` — the API notes
   this reflects each member's contribution toward the league's running total,
   not their all-time PS99 stats.
-- If the PS99 API can't resolve a member's Roblox display name at snapshot
-  time, it falls back to their raw numeric user ID. The bot detects this and
-  makes a follow-up call to Roblox's public users API to fill in the real
-  name, caching results for 6 hours so it doesn't re-resolve names every poll.
-  If that lookup also fails, the numeric ID is shown as a last resort rather
-  than blocking the update. This resolution step has to be applied everywhere
-  `PointContributions`/`Owner` data from the PS99 API is displayed — it was
-  originally only wired into the tracked-channel poller and got missed in
-  `/leaguesnapshot` for a while, which is why an early version of that
-  command showed raw numeric IDs instead of names. Worth double-checking if
-  a future command ever displays league member/owner data directly.
+- **Names come from Roblox, not PS99.** The PS99 API's `DisplayName` field is
+  in practice *always* the numeric UserID as a string — verified against live
+  responses, where all 4 members of the #1 league came back that way. So
+  Roblox's own users API is the only real name source. `src/lib/robloxNames.js`
+  resolves them in bulk and caches for 6 hours.
+
+  It keeps **both** names: Roblox's `name` (the unique `@username`) and
+  `displayName` (freely chosen, non-unique). An earlier version did
+  `r.displayName || r.name`, throwing the username away entirely — which is
+  why player search could never match a username and every embed showed only
+  display names. Embeds now show the username, with the display name in
+  parentheses when it differs and adds information.
+
+  This resolution step must be applied everywhere `PointContributions`/`Owner`
+  data is displayed. It was originally only wired into the tracked-channel
+  poller and got missed in `/leaguesnapshot` for a while, which is why an
+  early version of that command showed raw numeric IDs. Worth double-checking
+  if a future command ever displays member/owner data directly.
 - The graph bundles its own font (`assets/fonts/DejaVuSans*.ttf`) and
   registers it explicitly with Chart.js. This matters because minimal Linux
   containers (like Railway's build image) often ship with **no fonts

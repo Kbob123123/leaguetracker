@@ -6,8 +6,10 @@ import {
   pruneOldLeaguePointsHistory,
   recordPlayerPointsBatch,
   pruneOldPlayerPointsHistory,
+  recordDailyPointsBatch,
+  pruneDailyPoints,
 } from './db.js';
-import { resolveDisplayNames } from './robloxNames.js';
+import { resolveNames, formatName } from './robloxNames.js';
 
 // How many top leagues (by Points) to pull individual player contributions
 // from. This is a deliberate tradeoff: going wider (e.g. all ~90k+ leagues)
@@ -50,8 +52,15 @@ export async function rebuildPlayerRankings() {
   // list data we already have — this is what lets ANY of these leagues get a
   // real hourly rate later (not just the one actively being tracked), without
   // needing any extra API calls beyond what we're already making.
-  recordLeaguePointsBatch(targets.map((t) => ({ leagueId: t.ID, leagueName: t.Name, points: t.Points })));
+  const pointRows = targets.map((t) => ({ leagueId: t.ID, leagueName: t.Name, points: t.Points }));
+  recordLeaguePointsBatch(pointRows);
   pruneOldLeaguePointsHistory();
+
+  // Same data, second destination: the hourly table is pruned at 26h for rate
+  // math, so it's also rolled up into one row per day for long-term history.
+  // Costs no extra API calls.
+  recordDailyPointsBatch(pointRows);
+  pruneDailyPoints();
 
   // Step 2: fetch full detail (with PointContributions) for each, one at a
   // time with a small delay — this is the expensive part.
@@ -84,12 +93,18 @@ export async function rebuildPlayerRankings() {
 
   // Step 3: resolve any numeric-fallback display names in bulk before storing,
   // same as the tracked-league poller does.
-  const resolved = await resolveDisplayNames(allPlayers);
+  const resolved = await resolveNames(allPlayers);
 
   // Record per-member history too (for /leaguesnapshot and per-member rates
-  // in /playerinfo) — reuses the same data fetched above, no extra API calls.
+  // in /leagueplayer) — reuses the same data fetched above, no extra API calls.
   recordPlayerPointsBatch(
-    resolved.map((p) => ({ userId: p.userId, displayName: p.displayName, leagueId: p.leagueId, points: p.points }))
+    resolved.map((p) => ({
+      userId: p.userId,
+      displayName: p.displayName,
+      username: p.username,
+      leagueId: p.leagueId,
+      points: p.points,
+    }))
   );
   pruneOldPlayerPointsHistory();
 
@@ -104,6 +119,7 @@ export async function rebuildPlayerRankings() {
   const rows = Array.from(byUserId.values()).map((p) => ({
     userId: p.userId,
     displayName: p.displayName,
+    username: p.username ?? null,
     points: p.points,
     leagueId: p.leagueId,
     leagueName: p.leagueName,
