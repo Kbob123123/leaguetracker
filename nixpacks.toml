@@ -26,9 +26,19 @@
 # signal to add them — at that point, confirm the exact package name via
 # https://search.nixos.org/packages before adding, since a wrong nixLibs
 # entry likely fails the whole build rather than degrading gracefully.
+#
+# libuuid: hit a THIRD real crash after the two above — "libuuid.so.1: cannot
+# open shared object file" from canvas's native binary. This is a
+# well-documented node-canvas/Nixpacks issue (confirmed via Railway's own
+# help station and multiple node-canvas GitHub issues). `util-linux` was
+# already in this list and does contain libuuid internally, but its Nix
+# *binaries* (things like `last`, `mount`) don't reliably expose the shared
+# library itself on LD_LIBRARY_PATH the way a dedicated nixLibs entry does —
+# libuuid needs its own explicit line, not just util-linux's presence.
 [phases.setup]
 nixLibs = [
   "util-linux",
+  "libuuid",
   "cairo",
   "pango",
   "libjpeg",
