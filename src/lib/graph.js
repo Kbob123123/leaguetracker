@@ -1,4 +1,3 @@
-import { ChartJSNodeCanvas } from 'chartjs-node-canvas';
 import { formatName } from './robloxNames.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,21 +8,66 @@ const FONT_DIR = path.join(__dirname, '..', '..', 'assets', 'fonts');
 const width = 900;
 const height = 500;
 
-const chartCanvas = new ChartJSNodeCanvas({
-  width,
-  height,
-  backgroundColour: '#2b2d31', // Discord dark theme background
-  // Minimal Linux containers (like Railway's Nixpacks build) often ship with
-  // no fonts installed at all, which makes chart text render as empty boxes.
-  // Bundling a font in the repo and registering it here guarantees it's
-  // always available regardless of the host OS.
-  chartCallback: (ChartJS) => {
-    ChartJS.defaults.font.family = 'DejaVu Sans';
-  },
-});
+/**
+ * Chart rendering is loaded LAZILY and never at module scope.
+ *
+ * chartjs-node-canvas pulls in `canvas`, a native module that dlopen()s the
+ * cairo/pango stack at require() time. On a host missing any of those shared
+ * libraries (the classic one is `libuuid.so.1`), a top-level import throws
+ * while the module is still being evaluated — which takes down every command
+ * that imports this file, and every command that imports something that
+ * imports this file. That cost us /claninfo and /leagueinfo, neither of which
+ * draws a chart at all.
+ *
+ * Charts are decoration; the numbers are the product. Deferring the import to
+ * first use means a missing system library costs a chart image, not a command.
+ */
+let canvasPromise = null;
 
-chartCanvas.registerFont(path.join(FONT_DIR, 'DejaVuSans.ttf'), { family: 'DejaVu Sans', weight: 'normal' });
-chartCanvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: 'DejaVu Sans', weight: 'bold' });
+function getCanvas() {
+  if (canvasPromise) return canvasPromise;
+
+  canvasPromise = (async () => {
+    const { ChartJSNodeCanvas } = await import('chartjs-node-canvas');
+
+    const canvas = new ChartJSNodeCanvas({
+      width,
+      height,
+      backgroundColour: '#2b2d31', // Discord dark theme background
+      // Minimal Linux containers often ship with no fonts installed at all,
+      // which renders chart text as empty boxes. Bundling a font and
+      // registering it here makes output independent of the host.
+      chartCallback: (ChartJS) => {
+        ChartJS.defaults.font.family = 'DejaVu Sans';
+      },
+    });
+
+    canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans.ttf'), { family: 'DejaVu Sans', weight: 'normal' });
+    canvas.registerFont(path.join(FONT_DIR, 'DejaVuSans-Bold.ttf'), { family: 'DejaVu Sans', weight: 'bold' });
+
+    return canvas;
+  })().catch((err) => {
+    console.warn(
+      `[graph] Chart rendering unavailable (${err.message}). ` +
+        'Embeds will post without images; everything else works normally.'
+    );
+    return null; // cached, so the warning appears once rather than per render
+  });
+
+  return canvasPromise;
+}
+
+/** Render a chart config, or null if this host can't render charts. */
+async function render(config) {
+  const canvas = await getCanvas();
+  if (!canvas) return null;
+  try {
+    return await canvas.renderToBuffer(config);
+  } catch (err) {
+    console.warn('[graph] Render failed:', err.message);
+    return null;
+  }
+}
 
 const MEMBER_COLORS = ['#5865F2', '#57F287', '#FEE75C', '#ED4245', '#EB459E'];
 
@@ -47,7 +91,7 @@ const HISTORY_COLOR = '#3987e5';
 export async function renderHistoryChart(leagueName, rows) {
   if (!rows || rows.length < 2) return null;
 
-  const buffer = await chartCanvas.renderToBuffer({
+  const buffer = await render({
     type: 'line',
     data: {
       labels: rows.map((r) => r.day.slice(5)), // MM-DD; the year is noise here
@@ -190,5 +234,5 @@ export async function renderMemberGraph(snapshots, leagueName) {
     },
   };
 
-  return chartCanvas.renderToBuffer(config);
+  return render(config);
 }
