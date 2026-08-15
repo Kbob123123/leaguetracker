@@ -12,7 +12,20 @@ import { hourlyRate, formatPoints, formatRate, timeToOvertake, formatDuration } 
 const HOUR_SECONDS = 3600;
 const TOP_N = 10;
 
-const MEDALS = ['🥇', '🥈', '🥉'];
+/** Short number for a fixed-width column: 1647600 -> "1.65M". */
+function compact(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
+/** Clip a name so one long league can't shove every column out of alignment. */
+function truncate(text, max) {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
 
 /**
  * Build the top-10 leaderboard embed.
@@ -49,38 +62,52 @@ export async function buildTop10Embed() {
     return { rank: i + 1, league, rate };
   });
 
-  const lines = rows.map(({ rank, league, rate }, i) => {
-    const medal = MEDALS[i] ?? `\`#${rank}\``;
-    const parts = [`${medal} **${league.Name}** — ${formatPoints(league.Points)} pts · ${formatRate(rate)}`];
+  // A leaderboard is tabular data, so it's rendered as an actual table in a
+  // code block. Discord uses a monospace font there, which is the only way to
+  // get columns that line up — the previous format put each league on two
+  // lines with a "└" continuation, turning ten leagues into twenty ragged rows
+  // that were genuinely hard to scan.
+  const nameWidth = Math.min(14, Math.max(6, ...rows.map((r) => r.league.Name.length)));
 
-    // Gap to the league directly above, plus an ETA when we know both rates
-    // and the chaser is actually closing (two-body, same as the tracked embed).
+  const table = [
+    `${'#'.padEnd(3)}${'LEAGUE'.padEnd(nameWidth)} ${'POINTS'.padStart(9)} ${'RATE/H'.padStart(9)} ${'BEHIND'.padStart(9)}`,
+    '─'.repeat(3 + nameWidth + 30),
+    ...rows.map(({ rank, league, rate }, i) => {
+      const above = rows[i - 1];
+      const gap = above ? above.league.Points - league.Points : null;
+      return (
+        `${String(rank).padEnd(3)}` +
+        `${truncate(league.Name, nameWidth).padEnd(nameWidth)} ` +
+        `${compact(league.Points).padStart(9)} ` +
+        `${(rate == null ? '—' : `+${compact(rate)}`).padStart(9)} ` +
+        `${(gap == null ? '—' : compact(gap)).padStart(9)}`
+      );
+    }),
+  ].join('\n');
+
+  // Overtake ETAs go BELOW the table rather than inside it: they only exist
+  // for some rows, and a mostly-empty column is worse than no column.
+  const races = [];
+  for (let i = 1; i < rows.length; i++) {
+    const { league, rate } = rows[i];
     const above = rows[i - 1];
-    if (above) {
-      const gap = above.league.Points - league.Points;
-      let detail = `└ ${formatPoints(gap)} behind ${above.league.Name}`;
-      if (rate != null && above.rate != null) {
-        // Returns either a number of hours, or {fallingBehind, gapGrowthPerHour}
-        // when the target is pulling away faster than the chaser is closing.
-        const result = timeToOvertake({
-          chaserPoints: league.Points,
-          chaserRate: rate,
-          targetPoints: above.league.Points,
-          targetRate: above.rate,
-        });
-        if (typeof result === 'number' && Number.isFinite(result) && result > 0) {
-          detail += ` · overtakes in ${formatDuration(result)}`;
-        } else if (result?.fallingBehind) {
-          detail += ` · losing ${formatPoints(Math.round(result.gapGrowthPerHour))}/h`;
-        }
-      }
-      parts.push(detail);
+    if (rate == null || above.rate == null) continue;
+
+    const result = timeToOvertake({
+      chaserPoints: league.Points,
+      chaserRate: rate,
+      targetPoints: above.league.Points,
+      targetRate: above.rate,
+    });
+
+    if (typeof result === 'number' && Number.isFinite(result) && result > 0) {
+      races.push(`**${league.Name}** overtakes **${above.league.Name}** in ${formatDuration(result)}`);
     }
+  }
 
-    return parts.join('\n');
-  });
-
-  embed.setDescription(lines.join('\n'));
+  embed.setDescription(
+    `\`\`\`\n${table}\n\`\`\`` + (races.length ? `\n${races.slice(0, 5).join('\n')}` : '')
+  );
 
   const anyRate = rows.some((r) => r.rate != null);
   embed.setFooter({
