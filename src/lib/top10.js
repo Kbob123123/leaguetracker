@@ -22,10 +22,7 @@ function compact(n) {
   return String(Math.round(n));
 }
 
-/** Clip a name so one long league can't shove every column out of alignment. */
-function truncate(text, max) {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
+const MEDALS = ['🥇', '🥈', '🥉'];
 
 /**
  * Build the top-10 leaderboard embed.
@@ -62,31 +59,24 @@ export async function buildTop10Embed() {
     return { rank: i + 1, league, rate };
   });
 
-  // A leaderboard is tabular data, so it's rendered as an actual table in a
-  // code block. Discord uses a monospace font there, which is the only way to
-  // get columns that line up — the previous format put each league on two
-  // lines with a "└" continuation, turning ten leagues into twenty ragged rows
-  // that were genuinely hard to scan.
-  const nameWidth = Math.min(14, Math.max(6, ...rows.map((r) => r.league.Name.length)));
+  // Styled list rather than a monospace code block — see the clan bot's
+  // top10.js for the reasoning. A code block aligns perfectly but reads as raw
+  // output; rich formatting lets the league NAME carry the weight and pushes
+  // the supporting numbers back.
+  const lines = rows.map(({ rank, league, rate }, i) => {
+    const badge = MEDALS[i] ?? `\`#${String(rank).padStart(2)}\``;
+    const parts = [`${badge} **${league.Name}** — ⭐ ${compact(league.Points)}`];
 
-  const table = [
-    `${'#'.padEnd(3)}${'LEAGUE'.padEnd(nameWidth)} ${'POINTS'.padStart(9)} ${'RATE/H'.padStart(9)} ${'BEHIND'.padStart(9)}`,
-    '─'.repeat(3 + nameWidth + 30),
-    ...rows.map(({ rank, league, rate }, i) => {
-      const above = rows[i - 1];
-      const gap = above ? above.league.Points - league.Points : null;
-      return (
-        `${String(rank).padEnd(3)}` +
-        `${truncate(league.Name, nameWidth).padEnd(nameWidth)} ` +
-        `${compact(league.Points).padStart(9)} ` +
-        `${(rate == null ? '—' : `+${compact(rate)}`).padStart(9)} ` +
-        `${(gap == null ? '—' : compact(gap)).padStart(9)}`
-      );
-    }),
-  ].join('\n');
+    if (rate != null) parts.push(`📈 +${compact(rate)}/h`);
 
-  // Overtake ETAs go BELOW the table rather than inside it: they only exist
-  // for some rows, and a mostly-empty column is worse than no column.
+    const above = rows[i - 1];
+    if (above) parts.push(`↑ ${compact(above.league.Points - league.Points)} behind`);
+
+    return parts.join('  ·  ');
+  });
+
+  // Overtake ETAs go in their own block rather than inline: they only exist
+  // for rows where both rates are known, so inline they'd make the list ragged.
   const races = [];
   for (let i = 1; i < rows.length; i++) {
     const { league, rate } = rows[i];
@@ -101,13 +91,15 @@ export async function buildTop10Embed() {
     });
 
     if (typeof result === 'number' && Number.isFinite(result) && result > 0) {
-      races.push(`**${league.Name}** overtakes **${above.league.Name}** in ${formatDuration(result)}`);
+      races.push(`⚔️ **${league.Name}** catches **${above.league.Name}** in ${formatDuration(result)}`);
     }
   }
 
-  embed.setDescription(
-    `\`\`\`\n${table}\n\`\`\`` + (races.length ? `\n${races.slice(0, 5).join('\n')}` : '')
-  );
+  embed.setDescription(lines.join('\n'));
+
+  if (races.length > 0) {
+    embed.addFields({ name: '🏁 Races to watch', value: races.slice(0, 4).join('\n') });
+  }
 
   const anyRate = rows.some((r) => r.rate != null);
   embed.setFooter({
