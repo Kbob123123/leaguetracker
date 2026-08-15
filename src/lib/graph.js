@@ -83,10 +83,7 @@ const HISTORY_COLOR = '#3987e5';
 /**
  * Long-term points history for one league: one point per day.
  *
- * Single series, so there is no legend — the title names what's plotted. Daily
- * granularity means a plain line is honest here (unlike the change-only pet
- * history in the spyer, which needs a stepped line): consecutive days are
- * genuinely consecutive samples.
+ * Single series, so there is no legend — the title names what's plotted.
  */
 export async function renderHistoryChart(leagueName, rows) {
   if (!rows || rows.length < 2) return null;
@@ -102,7 +99,7 @@ export async function renderHistoryChart(leagueName, rows) {
           backgroundColor: 'rgba(57,135,229,0.14)',
           borderWidth: 2,
           pointRadius: rows.length > 45 ? 0 : 3,
-          tension: 0.2,
+          tension: 0.35,
           fill: true,
         },
       ],
@@ -197,7 +194,7 @@ export async function renderMemberGraph(snapshots, leagueName) {
     borderColor: MEMBER_COLORS[i % MEMBER_COLORS.length],
     backgroundColor: MEMBER_COLORS[i % MEMBER_COLORS.length],
     spanGaps: true,
-    tension: 0.25,
+    tension: 0.35,
     pointRadius: 2,
     borderWidth: 2,
   }));
