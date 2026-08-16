@@ -39,6 +39,19 @@ try {
   if (guildId) {
     console.log(`Registering ${commands.length} commands to guild ${guildId} (instant)...`);
     await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+
+    // Guild and global registrations are separate sets and Discord shows BOTH
+    // in the picker, so a leftover global set from an earlier deploy makes
+    // every command appear twice. Clearing it is the only way to remove those
+    // duplicates. Only safe because this bot is deliberately guild-scoped; if
+    // it were ever meant to serve other servers, this would strip its commands
+    // from all of them.
+    try {
+      await rest.put(Routes.applicationCommands(clientId), { body: [] });
+      console.log('Cleared the global command set (duplicates of the guild set).');
+    } catch (err) {
+      console.warn('Could not clear global commands:', err.message);
+    }
   } else {
     console.log(`Registering ${commands.length} commands globally (may take up to 1 hour to propagate)...`);
     await rest.put(Routes.applicationCommands(clientId), { body: commands });
