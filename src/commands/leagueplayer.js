@@ -12,7 +12,7 @@ import { formatName, matchesName } from '../lib/robloxNames.js';
 const HOUR_SECONDS = 3600;
 
 // Named /leagueplayer rather than /playerinfo so it can't be confused with the
-// clan bot's /clanplayer when both bots are in the same server — Discord scopes
+// clan bot's /clansearch when both bots are in the same server — Discord scopes
 // command names per application, so two identical /playerinfo entries would
 // otherwise sit side by side in the picker distinguished only by a tiny avatar.
 export const data = new SlashCommandBuilder()

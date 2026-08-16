@@ -143,7 +143,7 @@ export async function renderHistoryChart(leagueName, rows) {
 /**
  * Same as renderMemberGraph, but takes pre-shaped { ts, members: [{userId,
  * displayName, points}] } objects directly instead of DB snapshot rows with
- * a members_json string column. Used by /leaguesnapshot, which sources
+ * a members_json string column. Used by /leagueinfo, which sources
  * history from player_points_history (a different table/shape) rather than
  * the channel-tracking snapshots table.
  */

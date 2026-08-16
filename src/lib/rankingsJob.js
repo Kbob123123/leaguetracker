@@ -95,7 +95,7 @@ export async function rebuildPlayerRankings() {
   // same as the tracked-league poller does.
   const resolved = await resolveNames(allPlayers);
 
-  // Record per-member history too (for /leaguesnapshot and per-member rates
+  // Record per-member history too (for /leagueinfo and per-member rates
   // in /leagueplayer) — reuses the same data fetched above, no extra API calls.
   recordPlayerPointsBatch(
     resolved.map((p) => ({

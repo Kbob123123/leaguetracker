@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_league_points_history_league_ts
 -- One row per (user_id, league_id, ts) each hourly rankings pass. Lets the
 -- bot compute a real hourly rate for any individual member of any top-1,000
 -- league (not just members of the one channel-tracked league), which powers
--- the standalone /leaguesnapshot lookup and per-member rate in /leagueplayer.
+-- the standalone /leagueinfo lookup and per-member rate in /leagueplayer.
 CREATE TABLE IF NOT EXISTS player_points_history (
   user_id      TEXT NOT NULL,
   display_name TEXT NOT NULL,
@@ -114,6 +114,22 @@ CREATE TABLE IF NOT EXISTS player_points_history (
 
 CREATE INDEX IF NOT EXISTS idx_player_points_history_user_ts
   ON player_points_history (user_id, ts);
+
+-- Roblox username/display-name cache, persisted rather than in-memory.
+--
+-- The hourly rankings job needs a name for every player in the top-1,000
+-- leagues — thousands of lookups. Held only in memory, that cache died with
+-- the process, so every restart re-asked Roblox for all of them at once and
+-- got HTTP 429 for most; those players were then stored under their numeric
+-- ID and could not be found by any name search, which is exactly why
+-- /leagueplayer could not find a member of a rank-70 league. On disk the
+-- second pass asks for almost nothing, which is what keeps us under the limit.
+CREATE TABLE IF NOT EXISTS roblox_names (
+  user_id      TEXT PRIMARY KEY,
+  username     TEXT NOT NULL,
+  display_name TEXT,
+  fetched_at   INTEGER NOT NULL
+);
 
 -- Legacy table from an earlier "locked target" design that has since been
 -- replaced with always-live target calculation (see embed.js / poller.js).
@@ -254,6 +270,21 @@ export function pruneOldSnapshots(channelId, keepSeconds = 26 * 3600) {
  * transaction. Used by the hourly top-N-leagues ranking rebuild — the table
  * always reflects the single most recent full pass, not an accumulating history.
  */
+/**
+ * A display name that is always bindable and never null.
+ *
+ * League contributions do carry a DisplayName, but it is very often just the
+ * numeric UserID, and when Roblox rate-limits the rankings job the entry comes
+ * back unresolved. `undefined` cannot bind to a SQLite parameter — the insert
+ * throws and takes the whole rebuild with it. Falling back to the numeric ID
+ * keeps the NOT NULL column satisfied and degrades one name rather than the
+ * entire pass. (The clan bot hit exactly this and its rankings job crashed
+ * every hour; same guard lives in its db.js.)
+ */
+function bindableDisplayName(row) {
+  return row.displayName ?? row.username ?? String(row.userId);
+}
+
 export function replacePlayerRankings(rows) {
   const deleteAll = db.prepare(`DELETE FROM player_rankings`);
   const insert = db.prepare(`
@@ -265,7 +296,15 @@ export function replacePlayerRankings(rows) {
   try {
     deleteAll.run();
     for (const row of rows) {
-      insert.run(row);
+      insert.run({
+        userId: String(row.userId),
+        displayName: bindableDisplayName(row),
+        username: row.username ?? null,
+        points: row.points ?? 0,
+        leagueId: String(row.leagueId),
+        leagueName: row.leagueName,
+        leagueRank: row.leagueRank,
+      });
     }
     db.exec('COMMIT');
   } catch (err) {
@@ -400,11 +439,11 @@ export function recordPlayerPointsBatch(rows) {
   try {
     for (const row of rows) {
       insert.run({
-        userId: row.userId,
-        displayName: row.displayName,
+        userId: String(row.userId),
+        displayName: bindableDisplayName(row),
         username: row.username ?? null,
-        leagueId: row.leagueId,
-        points: row.points,
+        leagueId: String(row.leagueId),
+        points: row.points ?? 0,
         ts,
       });
     }
@@ -541,6 +580,67 @@ export function getTop10Channel(channelId) {
 
 export function setTop10MessageId(channelId, messageId) {
   db.prepare(`UPDATE top10_channels SET message_id = ? WHERE channel_id = ?`).run(messageId, channelId);
+}
+
+/* ---------------------------------------------------------------------------
+ * Roblox name cache
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Cached names for the given user IDs, as a Map of userId -> {username,
+ * displayName}. Entries older than maxAgeSeconds are treated as absent.
+ */
+export function getCachedRobloxNames(userIds, maxAgeSeconds) {
+  if (userIds.length === 0) return new Map();
+
+  const cutoff = Math.floor(Date.now() / 1000) - maxAgeSeconds;
+  const found = new Map();
+
+  // Chunked because SQLite caps host parameters per statement (999 by
+  // default) and a rankings pass asks about far more players than that.
+  const CHUNK = 500;
+  for (let i = 0; i < userIds.length; i += CHUNK) {
+    const chunk = userIds.slice(i, i + CHUNK).map(String);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT user_id, username, display_name FROM roblox_names
+         WHERE fetched_at >= ? AND user_id IN (${placeholders})`
+      )
+      .all(cutoff, ...chunk);
+
+    for (const row of rows) {
+      found.set(row.user_id, { username: row.username, displayName: row.display_name ?? row.username });
+    }
+  }
+
+  return found;
+}
+
+/** Upsert resolved names. entries: [[userId, {username, displayName}], ...]. */
+export function putCachedRobloxNames(entries) {
+  if (entries.length === 0) return;
+
+  const insert = db.prepare(`
+    INSERT INTO roblox_names (user_id, username, display_name, fetched_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      username = excluded.username,
+      display_name = excluded.display_name,
+      fetched_at = excluded.fetched_at
+  `);
+  const now = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const [userId, names] of entries) {
+      insert.run(String(userId), names.username, names.displayName ?? null, now);
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 export function setRankingsMeta(key, value) {

@@ -27,18 +27,38 @@ has passed, the bot shows "collecting data" instead of a rate.
 
 | Command | Description |
 |---|---|
-| `/startmonitoringleague league:<name> [channel:#channel]` | Start tracking a league. Defaults to the current channel. Requires "Manage Server" permission. |
-| `/stopmonitoringleague [channel:#channel]` | Stop tracking and clear that channel's history. Requires "Manage Server" permission. |
-| `/listmonitoredleagues` | List every league currently tracked in the server. |
-| `/leagueinfo league:<name>` | One-off lookup — current rank, points, and members, no tracking started. |
-| `/leaguesnapshot league:<name>` | Snapshot of any of the top 1,000 leagues (not just ones actively tracked), pulled from the last hourly scan. Shows points, rate, rank, contributions, and a graph — same style as the tracked embed, but a point-in-time snapshot rather than a live-updating message. |
+| `/leaguemonitor league name:<league> action:<start\|stop> [channel:#channel]` | Start or stop tracking a league in a channel. Defaults to the current channel. Stopping clears that channel's history, so `name` must match what the channel is actually tracking. Requires "Manage Server". |
+| `/leaguemonitor list` | Every league being monitored in this server. Requires "Manage Server". |
+| `/leagueinfo league:<name>` | Full lookup for any of the top 1,000 leagues — points, rate, global rank, neighbours, owner, contributions and a 24h graph. Point-in-time, not live-updating. |
 | `/leagueplayer name:<username or display name>` | Look up a player. Checks leagues tracked in this server (live data), then the top-1,000 league rankings (hourly snapshot). Matches on **username or display name**. |
-| `/leaguetop10` | Current top 10 leagues by points, with hourly rates and overtake ETAs. |
+| `/leaguetop10 [channel:#channel] [stop:true]` | With no options, shows the current top 10 leagues with hourly rates and overtake ETAs. With `channel`, installs a **self-updating** board there that edits its own message in place. With `stop:true`, removes that board. Installing or removing requires "Manage Server"; plain viewing does not. |
 | `/leaguehistory league:<name> [days:7\|30\|90\|180]` | Long-term points history as a daily chart, plus total gained and average rate over the period. |
-| `/setleaguetop10 [channel:#channel]` | Set a channel to show a **self-updating** top-10 board — it edits its own message in place rather than posting a new one each cycle. Run with no channel to stop updating the current one. Requires "Manage Server". |
+| `/help [command:<name>]` | Every command, grouped, with what each one does. Pass a name for full detail on one, including its arguments and subcommands. |
+
+`/help` builds its list from the commands the bot actually loaded at startup,
+not from a hardcoded table — so it cannot go stale the way this README can. A
+new command file shows up automatically; the only handwritten part is which
+heading it sits under, and anything uncategorised falls into "Other" rather
+than disappearing.
+
+### Why these names
+
+`/leaguemonitor` is one command with subcommands rather than three separate
+ones (`/startmonitoringleague`, `/stopmonitoringleague`,
+`/listmonitoredleagues`). One consequence of the merge: `/leaguemonitor list`
+inherits the command-level "Manage Server" gate, where `/listmonitoredleagues`
+was open to everyone.
+
+It is not called plain `/monitor` even though the clan bot's equivalent is —
+same reasoning as `/leagueplayer` below. The clan bot got the unprefixed name
+because its version covers two targets (clans and players); this one covers
+only leagues.
+
+`/leagueinfo` absorbed `/leaguesnapshot`. They were the same lookup, one of
+them just thinner; the snapshot view won.
 
 `/leagueplayer` was renamed from `/playerinfo` so it can't be confused with
-the clan bot's `/clanplayer` — Discord scopes command names per application,
+the clan bot's `/clansearch` — Discord scopes command names per application,
 so two bots both registering `/playerinfo` would appear as two identical
 entries in the picker, told apart only by a small avatar.
 
@@ -50,7 +70,7 @@ per-player route at all, so player stats can only come from league
 contribution data and lookup is limited to the top-1,000 scanned leagues.
 
 You can track **multiple leagues at once**, one per channel — run
-`/startmonitoringleague` in as many channels as you like. The first tracked
+`/leaguemonitor league action:start` in as many channels as you like. The first tracked
 embed posts **immediately** when you run the command (it reuses the same
 code path as the recurring 10-minute poller), not on a delay waiting for the
 next scheduled poll tick.
@@ -63,7 +83,7 @@ Each tracked embed also shows, once an hour of history exists:
 
 Each member in the list also shows a small `#1234` tag next to their name if
 they're currently in the top-1,000 league rankings (the same data source
-`/playerinfo` uses) — this is their overall rank among tracked top-league
+`/leagueplayer` uses) — this is their overall rank among tracked top-league
 players, not their rank within the 4-person league. It only appears once the
 hourly rankings job has scanned at least once and found that specific
 player; members outside the top 1,000 leagues just won't have a tag, which is
@@ -133,7 +153,7 @@ enough data is available yet.
 Separately from the 10-minute tracked-league poller, a background job runs
 **once an hour** and rebuilds a leaderboard of individual players across the
 **top 1,000 leagues** (by league Points). This powers the global-rank portion
-of `/playerinfo`.
+of `/leagueplayer`.
 
 The same hourly pass also records each of those 1,000 leagues' current points
 into a small history table — at no extra API cost, since it reuses data the
@@ -142,7 +162,7 @@ for any of those leagues, not just the one actively being tracked. That
 league-rate data is what powers the two-body ETA math described above.
 
 It also records **each individual member's** points the same way, which is
-what `/leaguesnapshot` and the per-member rates in `/playerinfo` are built
+what `/leagueinfo` and the per-member rates in `/leagueplayer` are built
 on — again no extra API cost, since `PointContributions` is already being
 fetched for the player-rankings pass.
 
@@ -279,7 +299,8 @@ that file for the specific error messages if it ever needs revisiting.
 
   This resolution step must be applied everywhere `PointContributions`/`Owner`
   data is displayed. It was originally only wired into the tracked-channel
-  poller and got missed in `/leaguesnapshot` for a while, which is why an
+  poller and got missed in the snapshot lookup (now `/leagueinfo`) for a
+  while, which is why an
   early version of that command showed raw numeric IDs. Worth double-checking
   if a future command ever displays member/owner data directly.
 - The graph bundles its own font (`assets/fonts/DejaVuSans*.ttf`) and
@@ -287,7 +308,7 @@ that file for the specific error messages if it ever needs revisiting.
   containers (like Railway's build image) often ship with **no fonts
   installed at all** — without a bundled font, chart text renders as empty
   boxes. Don't delete the `assets/fonts` folder.
-- `/playerinfo` checks three sources in order, falling through only if the
+- `/leagueplayer` checks three sources in order, falling through only if the
   previous one finds nothing: (1) leagues actively tracked in that server —
   the most reliable, live data; (2) the hourly top-1,000 league rankings scan
   — not live, but covers any player in a genuinely competitive league even if
@@ -302,15 +323,15 @@ that file for the specific error messages if it ever needs revisiting.
   implementation of a pattern confirmed directly from the official API's
   quickstart docs (`/v1/players/{username}?include=profile`), but the exact
   field names returned inside a public profile haven't been confirmed against
-  a live response, so `/playerinfo` displays whatever fields actually come
+  a live response, so `/leagueplayer` displays whatever fields actually come
   back rather than assuming specific ones — if a lookup succeeds but shows
   unexpected or missing fields, that's the part to sanity-check first.
-- `/playerinfo`'s tier-2 global rank only covers players in the **top 1,000
+- `/leagueplayer`'s tier-2 global rank only covers players in the **top 1,000
   leagues** (refreshed hourly) — it can't show a rank for players in
   smaller/lower leagues, since the PS99 API has no bulk endpoint for
   individual player stats and pulling every league would take hours per
   rebuild.
-- `/leaguesnapshot` shows data from the **last hourly rankings scan**, not a
+- `/leagueinfo` shows data from the **last hourly rankings scan**, not a
   live poll — the header stats (points, rank) come from a fresh API call when
   you run the command, but member rates and the graph come from stored
   history, so they're only as fresh as the most recent hourly job run. If the

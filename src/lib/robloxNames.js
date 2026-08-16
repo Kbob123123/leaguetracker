@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { getCachedRobloxNames, putCachedRobloxNames } from './db.js';
 
 // Roblox identity resolution.
 //
@@ -21,10 +22,30 @@ import fetch from 'node-fetch';
 //    which to show via formatName() below.
 
 const ROBLOX_USERS_ENDPOINT = 'https://users.roblox.com/v1/users';
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — names rarely change
+// Names rarely change, and a stale one costs far less than a rate-limited pass
+// that loses thousands of them, so the on-disk copy is kept for a week.
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours in memory
+const CACHE_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days on disk
 const BATCH_SIZE = 100; // Roblox's documented max per request
 
+// Roblox rate-limits this endpoint, and an hourly rankings pass asks it for
+// thousands of names. Firing every batch back-to-back got HTTP 429 on more
+// than 30 of ~40 batches in a single live run: those players were then stored
+// with username NULL and display_name set to their numeric ID, which made them
+// invisible to every name search in the bot. Hence a gap between batches and a
+// real retry, rather than logging the failure and moving on.
+// Measured against the live API: 300ms between batches still 429'd roughly one
+// batch in five. The throttle alone cannot carry a 4,000-name pass, which is
+// why the persistent cache below matters more than these numbers do.
+const BATCH_DELAY_MS = 700;
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF_MS = 2000;
+
 const cache = new Map(); // userId (string) -> { username, displayName, expiresAt }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * True if the name we already hold is unusable and needs a real lookup.
@@ -65,21 +86,75 @@ export async function resolveNames(entries) {
 
   // De-duplicate before hitting the network — the same player can legitimately
   // appear more than once in a batch (e.g. clan owner also listed as a member).
-  const uniqueIds = [...new Set(idsToFetch.map((id) => String(id)))];
+  let uniqueIds = [...new Set(idsToFetch.map((id) => String(id)))];
+
+  // Second chance before the network: the on-disk cache, which unlike the
+  // in-memory one survives a restart. This is what keeps a rankings pass from
+  // re-asking Roblox for thousands of names it already knows.
+  if (uniqueIds.length > 0) {
+    let persisted;
+    try {
+      persisted = getCachedRobloxNames(uniqueIds, CACHE_TTL_SECONDS);
+    } catch (err) {
+      // A cache miss must never be fatal — fall through to the network.
+      console.warn('[roblox] Name cache read failed, falling back to the API:', err.message);
+      persisted = new Map();
+    }
+
+    for (const [userId, names] of persisted) {
+      resolved.set(userId, names);
+      cache.set(userId, { ...names, expiresAt: now + CACHE_TTL_MS });
+    }
+    uniqueIds = uniqueIds.filter((id) => !persisted.has(id));
+  }
+
+  const freshlyFetched = [];
+
+  let failedBatches = 0;
+  let failedIds = 0;
+  let lastError = null;
 
   for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
     const batch = uniqueIds.slice(i, i + BATCH_SIZE);
     try {
-      const rows = await fetchUsersBatch(batch);
+      const rows = await fetchUsersBatchWithRetry(batch);
       for (const [userId, names] of rows) {
         resolved.set(userId, names);
         cache.set(userId, { ...names, expiresAt: now + CACHE_TTL_MS });
+        freshlyFetched.push([userId, names]);
       }
     } catch (err) {
-      // Roblox hiccup — leave these entries as-is for this pass and try again
-      // next time rather than failing the whole update.
-      console.warn('[roblox] Failed to resolve a batch of names:', err.message);
+      // Roblox is still refusing after every retry — leave these entries as-is
+      // for this pass rather than failing the whole update. Counted, not
+      // logged per batch: the old per-batch warning produced 30+ identical
+      // lines that buried the fact that most of a run had failed.
+      failedBatches += 1;
+      failedIds += batch.length;
+      lastError = err;
     }
+
+    // Space the batches out. Not needed for a single batch (a poll of one
+    // clan/league), which is the common case and stays as fast as before.
+    if (i + BATCH_SIZE < uniqueIds.length) await sleep(BATCH_DELAY_MS);
+  }
+
+  // Persist whatever did come back, even if some batches failed — a partial
+  // pass still shrinks the next one, so repeated runs converge instead of
+  // hitting the same wall every hour.
+  if (freshlyFetched.length > 0) {
+    try {
+      putCachedRobloxNames(freshlyFetched);
+    } catch (err) {
+      console.warn('[roblox] Name cache write failed (names still resolved for this pass):', err.message);
+    }
+  }
+
+  if (failedBatches > 0) {
+    console.warn(
+      `[roblox] ${failedIds} of ${uniqueIds.length} names unresolved after retries ` +
+        `(${failedBatches} batch(es) failed). Last error: ${lastError?.message}. ` +
+        'Those players keep their numeric ID as a name and will not match name searches.'
+    );
   }
 
   return entries.map((e) => {
@@ -87,6 +162,28 @@ export async function resolveNames(entries) {
     if (!names) return e;
     return { ...e, username: names.username, displayName: names.displayName || e.displayName };
   });
+}
+
+/**
+ * One batch, retrying on 429 with exponential backoff.
+ *
+ * Honours Retry-After when Roblox sends it, since guessing shorter than the
+ * server's own stated wait just burns another attempt.
+ */
+async function fetchUsersBatchWithRetry(batch) {
+  let backoff = INITIAL_BACKOFF_MS;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchUsersBatch(batch);
+    } catch (err) {
+      const retryable = err.status === 429 || (err.status >= 500 && err.status < 600);
+      if (!retryable || attempt >= MAX_RETRIES) throw err;
+
+      await sleep(err.retryAfterMs ?? backoff);
+      backoff *= 2;
+    }
+  }
 }
 
 /**
@@ -130,7 +227,17 @@ async function fetchUsersBatch(userIds) {
   });
 
   if (!res.ok) {
-    throw new Error(`Roblox users API returned HTTP ${res.status}`);
+    // Attach the status so the caller can tell "back off and retry" (429, 5xx)
+    // apart from "this request is wrong and always will be" (4xx).
+    const err = new Error(`Roblox users API returned HTTP ${res.status}`);
+    err.status = res.status;
+
+    // Retry-After is in seconds per the HTTP spec; Roblox does not always send
+    // it, in which case the caller falls back to its own backoff.
+    const retryAfter = Number(res.headers.get('retry-after'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = retryAfter * 1000;
+
+    throw err;
   }
 
   const body = await res.json();
