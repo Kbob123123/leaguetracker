@@ -36,25 +36,23 @@ try {
   const clientId = process.env.DISCORD_CLIENT_ID;
   const guildId = process.env.DISCORD_GUILD_ID;
 
-  if (guildId) {
-    console.log(`Registering ${commands.length} commands to guild ${guildId} (instant)...`);
-    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
+  // Global registration, always — this bot serves servers beyond the owner's,
+  // and access is controlled by the /ownermenu whitelist at runtime rather
+  // than by which guilds the commands happen to be registered in.
+  //
+  // An earlier version registered to DISCORD_GUILD_ID and wiped the global
+  // set, which removed the commands from every other server. Guild scope is
+  // still supported for fast iteration, but it now ADDS a guild copy on top
+  // of the global set rather than replacing it.
+  console.log(`Registering ${commands.length} commands globally (may take up to 1 hour to propagate)...`);
+  await rest.put(Routes.applicationCommands(clientId), { body: commands });
 
-    // Guild and global registrations are separate sets and Discord shows BOTH
-    // in the picker, so a leftover global set from an earlier deploy makes
-    // every command appear twice. Clearing it is the only way to remove those
-    // duplicates. Only safe because this bot is deliberately guild-scoped; if
-    // it were ever meant to serve other servers, this would strip its commands
-    // from all of them.
-    try {
-      await rest.put(Routes.applicationCommands(clientId), { body: [] });
-      console.log('Cleared the global command set (duplicates of the guild set).');
-    } catch (err) {
-      console.warn('Could not clear global commands:', err.message);
-    }
-  } else {
-    console.log(`Registering ${commands.length} commands globally (may take up to 1 hour to propagate)...`);
-    await rest.put(Routes.applicationCommands(clientId), { body: commands });
+  if (guildId) {
+    // A guild copy appears instantly, so the owner's own server does not have
+    // to wait an hour. Discord shows both sets, so this is duplicated on
+    // purpose and only in the one guild.
+    console.log(`Also registering to guild ${guildId} for instant availability...`);
+    await rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: commands });
   }
 
   console.log('Done.');

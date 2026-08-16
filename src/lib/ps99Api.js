@@ -136,4 +136,35 @@ export async function getLeagueAtRank(rank) {
 // which is why player lookup is limited to the top-1,000 scanned leagues/clans.
 // Don't re-add a direct profile lookup without testing the route first.
 
+
+/**
+ * Whether a player has made their PS99 profile public, and which parts.
+ *
+ * Path is /v1/players/... with NO /api prefix — the prefixed form answers 401
+ * "Endpoint not valid", which is a different failure and easy to mistake for
+ * the route being gone. It is not gone; it answers a structured
+ * { code: 'player_not_found' } 404 for anyone who is not public.
+ *
+ * That 404 is genuinely ambiguous: it means "not public" OR "no such player",
+ * and the API gives us no way to tell them apart. Anything that is not a 404
+ * (rate limit, outage) returns public: null so a scan can report "unknown"
+ * rather than a false all-clear.
+ */
+export async function getPlayerVisibility(usernameOrId) {
+  try {
+    const data = await get(`/v1/players/${encodeURIComponent(usernameOrId)}`);
+    const account = data?.account ?? {};
+    return {
+      public: true,
+      robloxUserId: account.robloxUserId ?? String(usernameOrId),
+      username: account.username ?? null,
+      displayName: account.displayName ?? null,
+      publicViews: account.publicViews ?? {},
+    };
+  } catch (err) {
+    if (err.status === 404) return { public: false };
+    return { public: null, error: err.message };
+  }
+}
+
 export { Ps99ApiError };

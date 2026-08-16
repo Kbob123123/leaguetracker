@@ -10,11 +10,13 @@ const TYPE_SUBCOMMAND_GROUP = 2;
 // shows up, under "Other" — so adding a command file and forgetting to touch
 // this map degrades to a slightly untidy /help rather than a missing entry.
 const CATEGORIES = [
-  { name: '🔎 Look things up', commands: ['leagueinfo', 'leagueplayer'] },
+  { name: '🔎 Look things up', commands: ['leagueinfo', 'leagueplayer', 'leaguevisibility'] },
   { name: '🏆 Leaderboards', commands: ['leaguetop10'] },
   { name: '📈 History', commands: ['leaguehistory'] },
   { name: '👁️ Live monitoring', commands: ['leaguemonitor'] },
+  { name: '🔗 Account links', commands: ['leaguelink', 'forceleaguelink'] },
   { name: 'ℹ️ Meta', commands: ['help'] },
+  { name: '🔐 Owner only', commands: ['ownermenu'] },
 ];
 
 const BLURB =

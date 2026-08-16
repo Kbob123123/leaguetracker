@@ -72,6 +72,27 @@ CREATE TABLE IF NOT EXISTS daily_points (
 
 CREATE INDEX IF NOT EXISTS idx_daily_points_league_day ON daily_points (league_id, day);
 
+-- Long-term per-PLAYER history: one row per player per UTC day.
+--
+-- player_points_history is pruned at 26 hours because it exists to compute a
+-- trailing-hour rate, so before this table there was no way to chart a
+-- player's progress over weeks — /leaguehistory could only ever show leagues.
+-- Leagues have no Battles archive the way clans do, so our own daily readings
+-- are the ONLY possible source of player history, and it can only ever reach
+-- back as far as the bot has been running.
+CREATE TABLE IF NOT EXISTS player_daily_points (
+  user_id     TEXT NOT NULL,
+  username    TEXT,
+  league_id   TEXT NOT NULL,
+  league_name TEXT,
+  day         TEXT NOT NULL,
+  points      INTEGER NOT NULL,
+  ts          INTEGER NOT NULL,
+  PRIMARY KEY (user_id, day)
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_daily_user_day ON player_daily_points (user_id, day);
+
 -- Channels showing an auto-updating top-10 leaderboard. message_id is what
 -- makes the post edit itself in place every cycle instead of adding a new
 -- message each time — one channel holds one leaderboard, forever.
@@ -131,6 +152,45 @@ CREATE TABLE IF NOT EXISTS roblox_names (
   fetched_at   INTEGER NOT NULL
 );
 
+-- Roblox account <-> Discord account links, so the bot can DM a league member
+-- who has stopped scoring. League contributions identify people only by Roblox
+-- UserID; without a link there is no Discord user to message.
+--
+-- Keyed by roblox_user_id, not by (guild, roblox_user_id): a person's Roblox
+-- and Discord identities are the same everywhere, so one link per Roblox
+-- account is the honest model. guild_id and linked_by are kept for provenance
+-- — who claimed this link and where — not as part of the key.
+--
+-- discord_user_id is UNIQUE as well: letting one Discord account claim several
+-- Roblox accounts would make "who do I DM about this member" ambiguous in the
+-- one direction that matters.
+CREATE TABLE IF NOT EXISTS player_links (
+  roblox_user_id  TEXT PRIMARY KEY,
+  roblox_username TEXT NOT NULL,
+  discord_user_id TEXT NOT NULL UNIQUE,
+  guild_id        TEXT,
+  linked_by       TEXT,
+  linked_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_player_links_discord ON player_links (discord_user_id);
+
+-- Per-member idle tracking for a monitored league: what we last saw them on,
+-- when they stopped moving, and how many nudges we have already sent.
+--
+-- dms_sent is what stops the reminder becoming harassment. Someone asleep at
+-- 3am would otherwise be messaged every ten minutes until morning, so the
+-- count is capped and only resets when they actually score again.
+CREATE TABLE IF NOT EXISTS member_idle_state (
+  channel_id   TEXT NOT NULL,
+  user_id      TEXT NOT NULL,
+  last_points  INTEGER NOT NULL,
+  idle_since   INTEGER,
+  dms_sent     INTEGER NOT NULL DEFAULT 0,
+  last_dm_at   INTEGER,
+  PRIMARY KEY (channel_id, user_id)
+);
+
 -- Legacy table from an earlier "locked target" design that has since been
 -- replaced with always-live target calculation (see embed.js / poller.js).
 -- Left here harmlessly for backward compatibility with existing deployments;
@@ -144,6 +204,36 @@ CREATE TABLE IF NOT EXISTS locked_targets (
   locked_at      INTEGER NOT NULL,
   PRIMARY KEY (channel_id, target_key)
 );
+
+-- Servers allowed to use the bot, managed by the owner via /ownermenu.
+--
+-- An EMPTY table means "allow everyone" on purpose. The alternative — empty
+-- means deny — would take every server offline the moment this shipped, and
+-- the owner would have to whitelist their way back in from a bot that no
+-- longer answers them. Enforcement only begins once at least one guild is
+-- listed, which makes turning it on a deliberate act.
+CREATE TABLE IF NOT EXISTS guild_whitelist (
+  guild_id TEXT PRIMARY KEY,
+  note     TEXT,
+  added_by TEXT,
+  added_at INTEGER NOT NULL
+);
+
+-- Every command invocation, so the owner can see what each server is doing.
+CREATE TABLE IF NOT EXISTS command_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         INTEGER NOT NULL,
+  guild_id   TEXT,
+  guild_name TEXT,
+  user_id    TEXT NOT NULL,
+  username   TEXT,
+  command    TEXT NOT NULL,
+  options    TEXT,
+  outcome    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_log_ts ON command_log (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_command_log_guild ON command_log (guild_id, ts DESC);
 `);
 
 /**
@@ -539,6 +629,74 @@ export function getDailyHistory(leagueId, days = 30) {
   `).all(leagueId, cutoff);
 }
 
+/**
+ * Record today's points for a batch of players.
+ *
+ * Same (id, day) primary-key trick as recordDailyPointsBatch: repeated writes
+ * during the day overwrite rather than accumulate, so each day ends holding
+ * that day's final reading.
+ */
+export function recordPlayerDailyBatch(rows) {
+  const ts = Math.floor(Date.now() / 1000);
+  const day = dayKey(ts);
+  const insert = db.prepare(`
+    INSERT INTO player_daily_points (user_id, username, league_id, league_name, day, points, ts)
+    VALUES (@userId, @username, @leagueId, @leagueName, @day, @points, @ts)
+    ON CONFLICT(user_id, day) DO UPDATE SET
+      points = excluded.points,
+      username = excluded.username,
+      league_id = excluded.league_id,
+      league_name = excluded.league_name,
+      ts = excluded.ts
+  `);
+
+  db.exec('BEGIN');
+  try {
+    for (const row of rows) {
+      insert.run({
+        userId: String(row.userId),
+        username: row.username ?? null,
+        leagueId: String(row.leagueId),
+        leagueName: row.leagueName ?? null,
+        day,
+        points: row.points ?? 0,
+        ts,
+      });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Daily rows for one player over the last N days, oldest first. */
+export function getPlayerDailyHistory(userId, days = 30) {
+  const cutoff = dayKey(Math.floor(Date.now() / 1000) - days * 86400);
+  return db
+    .prepare(`SELECT * FROM player_daily_points WHERE user_id = ? AND day >= ? ORDER BY day ASC`)
+    .all(String(userId), cutoff);
+}
+
+/** Find a player in the daily history by username or display name. */
+export function findPlayerDailyByName(query) {
+  return db
+    .prepare(
+      `SELECT user_id, username, league_name, MAX(day) AS latest_day
+       FROM player_daily_points
+       WHERE LOWER(COALESCE(username, '')) LIKE '%' || LOWER(?) || '%'
+       GROUP BY user_id
+       ORDER BY latest_day DESC, COUNT(*) DESC
+       LIMIT 5`
+    )
+    .all(query);
+}
+
+export function prunePlayerDailyPoints(keepDays = 180) {
+  const cutoff = dayKey(Math.floor(Date.now() / 1000) - keepDays * 86400);
+  db.prepare(`DELETE FROM player_daily_points WHERE day < ?`).run(cutoff);
+}
+
 /** Find a league's stored id by name (case-insensitive), for history lookups. */
 export function findDailyLeagueByName(name) {
   return db.prepare(`
@@ -580,6 +738,115 @@ export function getTop10Channel(channelId) {
 
 export function setTop10MessageId(channelId, messageId) {
   db.prepare(`UPDATE top10_channels SET message_id = ? WHERE channel_id = ?`).run(messageId, channelId);
+}
+
+/* ---------------------------------------------------------------------------
+ * Roblox <-> Discord account links
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Create or move a link.
+ *
+ * Both columns are unique, so re-linking either side has to displace whatever
+ * held it before — otherwise the insert just fails and the user is told
+ * "already linked" with no way forward. Deleting both sides first makes
+ * re-linking idempotent, which is what someone re-running the command expects.
+ */
+export function setPlayerLink({ robloxUserId, robloxUsername, discordUserId, guildId, linkedBy }) {
+  db.exec('BEGIN');
+  try {
+    db.prepare(`DELETE FROM player_links WHERE roblox_user_id = ? OR discord_user_id = ?`).run(
+      String(robloxUserId),
+      String(discordUserId)
+    );
+    db.prepare(`
+      INSERT INTO player_links
+        (roblox_user_id, roblox_username, discord_user_id, guild_id, linked_by, linked_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      String(robloxUserId),
+      robloxUsername,
+      String(discordUserId),
+      guildId ?? null,
+      linkedBy ? String(linkedBy) : null,
+      Math.floor(Date.now() / 1000)
+    );
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function getLinkByRobloxId(robloxUserId) {
+  return db.prepare(`SELECT * FROM player_links WHERE roblox_user_id = ?`).get(String(robloxUserId));
+}
+
+export function getLinkByDiscordId(discordUserId) {
+  return db.prepare(`SELECT * FROM player_links WHERE discord_user_id = ?`).get(String(discordUserId));
+}
+
+/** Remove a link by either side. Returns true if a row was actually deleted. */
+export function removePlayerLink({ robloxUserId, discordUserId }) {
+  const result = db
+    .prepare(`DELETE FROM player_links WHERE roblox_user_id = ? OR discord_user_id = ?`)
+    .run(robloxUserId ? String(robloxUserId) : null, discordUserId ? String(discordUserId) : null);
+  return result.changes > 0;
+}
+
+/** Links for a set of Roblox IDs, as a Map of robloxUserId -> row. */
+export function getLinksForRobloxIds(robloxUserIds) {
+  if (robloxUserIds.length === 0) return new Map();
+
+  const found = new Map();
+  const CHUNK = 500; // SQLite caps host parameters per statement
+  for (let i = 0; i < robloxUserIds.length; i += CHUNK) {
+    const chunk = robloxUserIds.slice(i, i + CHUNK).map(String);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(`SELECT * FROM player_links WHERE roblox_user_id IN (${placeholders})`)
+      .all(...chunk);
+    for (const row of rows) found.set(row.roblox_user_id, row);
+  }
+  return found;
+}
+
+export function getAllPlayerLinks() {
+  return db.prepare(`SELECT * FROM player_links ORDER BY linked_at DESC`).all();
+}
+
+/* ---------------------------------------------------------------------------
+ * Idle-member tracking
+ * ------------------------------------------------------------------------- */
+
+export function getIdleState(channelId, userId) {
+  return db
+    .prepare(`SELECT * FROM member_idle_state WHERE channel_id = ? AND user_id = ?`)
+    .get(String(channelId), String(userId));
+}
+
+export function upsertIdleState({ channelId, userId, lastPoints, idleSince, dmsSent, lastDmAt }) {
+  db.prepare(`
+    INSERT INTO member_idle_state (channel_id, user_id, last_points, idle_since, dms_sent, last_dm_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel_id, user_id) DO UPDATE SET
+      last_points = excluded.last_points,
+      idle_since  = excluded.idle_since,
+      dms_sent    = excluded.dms_sent,
+      last_dm_at  = excluded.last_dm_at
+  `).run(
+    String(channelId),
+    String(userId),
+    lastPoints ?? 0,
+    idleSince ?? null,
+    dmsSent ?? 0,
+    lastDmAt ?? null
+  );
+}
+
+/** Drop idle rows for a channel that is no longer tracked. */
+export function clearIdleStateForChannel(channelId) {
+  db.prepare(`DELETE FROM member_idle_state WHERE channel_id = ?`).run(String(channelId));
 }
 
 /* ---------------------------------------------------------------------------
@@ -653,4 +920,82 @@ export function setRankingsMeta(key, value) {
 export function getRankingsMeta(key) {
   const row = db.prepare(`SELECT value FROM rankings_meta WHERE key = ?`).get(key);
   return row ? row.value : null;
+}
+
+/* ---------------------------------------------------------------------------
+ * Guild whitelist and command log (owner tooling)
+ * ------------------------------------------------------------------------- */
+
+export function addWhitelistedGuild({ guildId, note, addedBy }) {
+  db.prepare(`
+    INSERT INTO guild_whitelist (guild_id, note, added_by, added_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(guild_id) DO UPDATE SET note = excluded.note
+  `).run(String(guildId), note ?? null, addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+}
+
+/** Returns true if a row was actually removed. */
+export function removeWhitelistedGuild(guildId) {
+  return db.prepare(`DELETE FROM guild_whitelist WHERE guild_id = ?`).run(String(guildId)).changes > 0;
+}
+
+export function getWhitelistedGuilds() {
+  return db.prepare(`SELECT * FROM guild_whitelist ORDER BY added_at ASC`).all();
+}
+
+export function countWhitelistedGuilds() {
+  return db.prepare(`SELECT COUNT(*) AS n FROM guild_whitelist`).get().n;
+}
+
+export function isGuildWhitelisted(guildId) {
+  if (!guildId) return false;
+  return !!db.prepare(`SELECT 1 FROM guild_whitelist WHERE guild_id = ?`).get(String(guildId));
+}
+
+const COMMAND_LOG_MAX_ROWS = 20000;
+
+export function logCommand({ guildId, guildName, userId, username, command, options, outcome }) {
+  db.prepare(`
+    INSERT INTO command_log (ts, guild_id, guild_name, user_id, username, command, options, outcome)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Math.floor(Date.now() / 1000),
+    guildId ? String(guildId) : null,
+    guildName ?? null,
+    String(userId),
+    username ?? null,
+    command,
+    options ?? null,
+    outcome
+  );
+
+  // Trim opportunistically rather than on a timer — cheap, and keeps the table
+  // bounded without another scheduled job to forget about.
+  if (Math.random() < 0.01) {
+    db.prepare(`
+      DELETE FROM command_log WHERE id <= (
+        SELECT MAX(id) - ? FROM command_log
+      )
+    `).run(COMMAND_LOG_MAX_ROWS);
+  }
+}
+
+/** Recent command log entries, newest first, optionally filtered to one guild. */
+export function getCommandLog({ guildId = null, limit = 25 } = {}) {
+  if (guildId) {
+    return db
+      .prepare(`SELECT * FROM command_log WHERE guild_id = ? ORDER BY ts DESC LIMIT ?`)
+      .all(String(guildId), limit);
+  }
+  return db.prepare(`SELECT * FROM command_log ORDER BY ts DESC LIMIT ?`).all(limit);
+}
+
+/** Per-guild usage totals, busiest first. */
+export function getCommandLogSummary(limit = 20) {
+  return db
+    .prepare(
+      `SELECT guild_id, guild_name, COUNT(*) AS uses, MAX(ts) AS last_used
+       FROM command_log GROUP BY guild_id ORDER BY uses DESC LIMIT ?`
+    )
+    .all(limit);
 }

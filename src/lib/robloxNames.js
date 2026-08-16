@@ -22,6 +22,11 @@ import { getCachedRobloxNames, putCachedRobloxNames } from './db.js';
 //    which to show via formatName() below.
 
 const ROBLOX_USERS_ENDPOINT = 'https://users.roblox.com/v1/users';
+// Spelled out rather than derived from the line above: deriving it with
+// .replace('/users', '') matched the "users" in the HOSTNAME first and
+// produced https://.roblox.com/..., which fails DNS rather than erroring
+// anywhere near the mistake.
+const ROBLOX_USERNAMES_ENDPOINT = 'https://users.roblox.com/v1/usernames/users';
 // Names rarely change, and a stale one costs far less than a rate-limited pass
 // that loses thousands of them, so the on-disk copy is kept for a week.
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours in memory
@@ -108,8 +113,7 @@ export async function resolveNames(entries) {
     uniqueIds = uniqueIds.filter((id) => !persisted.has(id));
   }
 
-  const freshlyFetched = [];
-
+  let fetchedCount = 0;
   let failedBatches = 0;
   let failedIds = 0;
   let lastError = null;
@@ -121,7 +125,18 @@ export async function resolveNames(entries) {
       for (const [userId, names] of rows) {
         resolved.set(userId, names);
         cache.set(userId, { ...names, expiresAt: now + CACHE_TTL_MS });
-        freshlyFetched.push([userId, names]);
+      }
+
+      // Flush to disk per batch, not once at the end. A full clan pass takes
+      // over ten minutes on a cold cache, and every deploy restarts the
+      // process mid-pass — batching the write to the end meant a restart threw
+      // away everything resolved so far, so the cache could never warm up and
+      // each pass hit the rate limit exactly like the last one.
+      try {
+        putCachedRobloxNames(rows);
+        fetchedCount += rows.length;
+      } catch (err) {
+        console.warn('[roblox] Name cache write failed (names still resolved for this pass):', err.message);
       }
     } catch (err) {
       // Roblox is still refusing after every retry — leave these entries as-is
@@ -138,15 +153,8 @@ export async function resolveNames(entries) {
     if (i + BATCH_SIZE < uniqueIds.length) await sleep(BATCH_DELAY_MS);
   }
 
-  // Persist whatever did come back, even if some batches failed — a partial
-  // pass still shrinks the next one, so repeated runs converge instead of
-  // hitting the same wall every hour.
-  if (freshlyFetched.length > 0) {
-    try {
-      putCachedRobloxNames(freshlyFetched);
-    } catch (err) {
-      console.warn('[roblox] Name cache write failed (names still resolved for this pass):', err.message);
-    }
+  if (fetchedCount > 0) {
+    console.log(`[roblox] Resolved and cached ${fetchedCount} name(s) from the API.`);
   }
 
   if (failedBatches > 0) {
@@ -217,6 +225,41 @@ export function matchesName(entry, query) {
   const username = entry?.username?.toLowerCase() ?? '';
   const display = entry?.displayName?.toLowerCase() ?? '';
   return username.includes(query) || display.includes(query);
+}
+
+/**
+ * The reverse direction: an exact @username -> {userId, username, displayName},
+ * or null if Roblox doesn't know it.
+ *
+ * Used by the link commands, where someone types their own username and we
+ * need the numeric ID that league contributions are actually keyed by. This is
+ * an EXACT match by design — a fuzzy link would happily attach the wrong
+ * account to a Discord user, and the whole point of linking is that it's right.
+ */
+export async function resolveUsernameToId(username) {
+  const query = String(username).trim().replace(/^@/, '');
+  if (!query) return null;
+
+  const res = await fetch(ROBLOX_USERNAMES_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ usernames: [query], excludeBannedUsers: false }),
+  });
+
+  if (!res.ok) {
+    const err = new Error(`Roblox username lookup returned HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+
+  const row = (await res.json())?.data?.[0];
+  if (!row?.id) return null;
+
+  return {
+    userId: String(row.id),
+    username: row.name,
+    displayName: row.displayName || row.name,
+  };
 }
 
 async function fetchUsersBatch(userIds) {

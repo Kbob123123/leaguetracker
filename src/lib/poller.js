@@ -18,6 +18,7 @@ import { buildLeagueEmbed } from './embed.js';
 import { renderMemberGraph } from './graph.js';
 import { resolveNames, formatName } from './robloxNames.js';
 import { hourlyRate } from './rates.js';
+import { checkIdleMembers } from './idleAlerts.js';
 
 const HOUR_SECONDS = 3600;
 const GRAPH_WINDOW_SECONDS = 24 * HOUR_SECONDS;
@@ -149,6 +150,19 @@ export async function pollOneChannel(client, trackedRow) {
   });
 
   pruneOldSnapshots(channelId);
+
+  // Nudge linked members who have stopped scoring. Isolated in its own
+  // try/catch: a Discord DM failure must never stop the tracked embed from
+  // updating, which is the thing everyone in the channel is actually watching.
+  try {
+    await checkIdleMembers(client, {
+      channelId,
+      leagueName: league.Name,
+      members: currentMembers,
+    });
+  } catch (err) {
+    console.error(`[idle] Idle check failed for channel ${channelId}:`, err.message);
+  }
 
   // Record daily history for the tracked league here as well as in the
   // rankings job. The job only covers the top 1,000, so without this a league

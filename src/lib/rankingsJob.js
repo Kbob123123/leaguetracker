@@ -8,6 +8,8 @@ import {
   pruneOldPlayerPointsHistory,
   recordDailyPointsBatch,
   pruneDailyPoints,
+  recordPlayerDailyBatch,
+  prunePlayerDailyPoints,
 } from './db.js';
 import { resolveNames, formatName } from './robloxNames.js';
 
@@ -107,6 +109,21 @@ export async function rebuildPlayerRankings() {
     }))
   );
   pruneOldPlayerPointsHistory();
+
+  // Same readings, rolled up to one row per player per day. The hourly table
+  // above is pruned at 26h for rate math, so this is the only thing that makes
+  // long-term player history possible at all — leagues have no Battles archive
+  // to fall back on the way clans do. Costs no extra API calls.
+  recordPlayerDailyBatch(
+    resolved.map((p) => ({
+      userId: p.userId,
+      username: p.username,
+      leagueId: p.leagueId,
+      leagueName: p.leagueName,
+      points: p.points,
+    }))
+  );
+  prunePlayerDailyPoints();
 
   // A player could theoretically appear more than once if they're in a
   // league's contributions under edge-case data quirks — keep the higher-points entry.
