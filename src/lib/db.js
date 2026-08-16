@@ -234,6 +234,13 @@ CREATE TABLE IF NOT EXISTS command_log (
 
 CREATE INDEX IF NOT EXISTS idx_command_log_ts ON command_log (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_command_log_guild ON command_log (guild_id, ts DESC);
+
+-- Small key/value store for owner settings that must outlive a restart,
+-- e.g. whether command logging is currently running.
+CREATE TABLE IF NOT EXISTS bot_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+);
 `);
 
 /**
@@ -954,7 +961,24 @@ export function isGuildWhitelisted(guildId) {
 
 const COMMAND_LOG_MAX_ROWS = 20000;
 
+/**
+ * Whether command logging is currently running.
+ *
+ * Defaults to ON when unset: the owner asked for this to monitor servers, and
+ * a monitor that silently starts disabled would look broken rather than idle.
+ * The menu's stop button writes 'off' explicitly.
+ */
+export function isCommandLoggingEnabled() {
+  return getMeta('command_logging') !== 'off';
+}
+
+export function setCommandLoggingEnabled(on) {
+  setMeta('command_logging', on ? 'on' : 'off');
+}
+
 export function logCommand({ guildId, guildName, userId, username, command, options, outcome }) {
+  if (!isCommandLoggingEnabled()) return;
+
   db.prepare(`
     INSERT INTO command_log (ts, guild_id, guild_name, user_id, username, command, options, outcome)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -998,4 +1022,19 @@ export function getCommandLogSummary(limit = 20) {
        FROM command_log GROUP BY guild_id ORDER BY uses DESC LIMIT ?`
     )
     .all(limit);
+}
+
+/* ---------------------------------------------------------------------------
+ * Owner settings
+ * ------------------------------------------------------------------------- */
+
+export function getMeta(key) {
+  return db.prepare(`SELECT value FROM bot_meta WHERE key = ?`).get(key)?.value ?? null;
+}
+
+export function setMeta(key, value) {
+  db.prepare(
+    `INSERT INTO bot_meta (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, String(value));
 }

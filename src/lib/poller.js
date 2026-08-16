@@ -154,12 +154,13 @@ export async function pollOneChannel(client, trackedRow) {
   // Nudge linked members who have stopped scoring. Isolated in its own
   // try/catch: a Discord DM failure must never stop the tracked embed from
   // updating, which is the thing everyone in the channel is actually watching.
+  let idleMembers = [];
   try {
-    await checkIdleMembers(client, {
+    ({ idleMembers = [] } = await checkIdleMembers(client, {
       channelId,
       leagueName: league.Name,
       members: currentMembers,
-    });
+    }));
   } catch (err) {
     console.error(`[idle] Idle check failed for channel ${channelId}:`, err.message);
   }
@@ -184,6 +185,7 @@ export async function pollOneChannel(client, trackedRow) {
     neighbors: neighborsWithRates,
     milestones: milestonesWithRates,
     trackingStartedAt: new Date(startedAt * 1000),
+    idleMembers,
   });
 
   const files = [];

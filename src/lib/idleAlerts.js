@@ -3,14 +3,15 @@ import { formatName } from './robloxNames.js';
 import { formatPoints } from './rates.js';
 
 // How many consecutive nudges one person gets before the bot goes quiet about
-// them. At the default 10-minute poll that is an hour of reminders.
+// them. 0 means no limit, which is the default: the owner wants to be pinged
+// until they get back in, and a ceiling defeats that.
 //
-// This cap is the whole reason the feature is tolerable. "DM every 10 minutes
-// until they score" with no ceiling means someone who logs off for the night
-// wakes up to dozens of messages, which is how a helpful nudge turns into
-// something people mute the bot over. The counter resets the moment they
-// score, so an active player who pauses briefly still gets reminded next time.
-const MAX_CONSECUTIVE_DMS = Number(process.env.IDLE_MAX_DMS) || 6;
+// Worth knowing if this is ever revisited: it applies to EVERY linked member,
+// not just the person who set it up. An unlimited stream of DMs to someone
+// else's account is how a bot gets blocked or reported, so IDLE_MAX_DMS is
+// kept as an escape hatch — set it to 6 and the old behaviour comes back.
+const MAX_CONSECUTIVE_DMS = Number(process.env.IDLE_MAX_DMS ?? 0);
+const CAP_ENABLED = MAX_CONSECUTIVE_DMS > 0;
 
 /**
  * Compare this poll's member points against the last one and DM anyone linked
@@ -33,7 +34,11 @@ export async function checkIdleMembers(client, { channelId, leagueName, members 
   const now = Math.floor(Date.now() / 1000);
 
   let dmsSent = 0;
-  let idleCount = 0;
+
+  // Collected rather than just counted, so the tracked embed can show WHO is
+  // idle. The embed builds after this runs, which is what makes the list
+  // current rather than a poll behind.
+  const idleMembers = [];
 
   for (const member of members) {
     const userId = String(member.userId);
@@ -55,13 +60,21 @@ export async function checkIdleMembers(client, { channelId, leagueName, members 
       continue;
     }
 
-    idleCount += 1;
     const idleSince = previous.idle_since ?? now;
     const alreadySent = previous.dms_sent ?? 0;
     const link = links.get(userId);
 
-    // No link, or the cap is reached — keep tracking, stay quiet.
-    if (!link || alreadySent >= MAX_CONSECUTIVE_DMS) {
+    idleMembers.push({
+      userId,
+      username: member.username,
+      displayName: member.displayName,
+      points,
+      idleSince,
+      linked: Boolean(link),
+    });
+
+    // No link, or a cap is set and reached — keep tracking, stay quiet.
+    if (!link || (CAP_ENABLED && alreadySent >= MAX_CONSECUTIVE_DMS)) {
       upsertIdleState({
         channelId,
         userId,
@@ -77,13 +90,17 @@ export async function checkIdleMembers(client, { channelId, leagueName, members 
     const remaining = MAX_CONSECUTIVE_DMS - attempt;
     const who = formatName(member, { withDisplayName: false });
 
+    const tail = !CAP_ENABLED
+      ? `_Reminder #${attempt} — I'll keep going every 10 minutes until you score again._`
+      : remaining > 0
+        ? `_Reminder ${attempt} of ${MAX_CONSECUTIVE_DMS}. I'll stop after that until you score again._`
+        : "_That's my last reminder until you score again._";
+
     const message =
       `⏰ **${who}** — you haven't gained any league points for **${leagueName}** ` +
       `since <t:${idleSince}:R>.\n` +
       `You're sitting on **${formatPoints(points)}** points. Time to get back in there!\n\n` +
-      (remaining > 0
-        ? `_Reminder ${attempt} of ${MAX_CONSECUTIVE_DMS}. I'll stop after that until you score again._`
-        : "_That's my last reminder until you score again._") +
+      tail +
       '\n_Turn these off any time with `/leaguelink unlink:true`._';
 
     let delivered = true;
@@ -109,5 +126,10 @@ export async function checkIdleMembers(client, { channelId, leagueName, members 
     });
   }
 
-  return { dmsSent, idle: idleCount };
+  // Longest-idle first: the person who stopped earliest is the one worth
+  // chasing, and a list ordered by who is most stuck reads better than one
+  // ordered by whatever the API happened to return.
+  idleMembers.sort((a, b) => a.idleSince - b.idleSince);
+
+  return { dmsSent, idle: idleMembers.length, idleMembers };
 }

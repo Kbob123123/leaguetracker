@@ -17,6 +17,10 @@ import { rebuildPlayerRankings } from './lib/rankingsJob.js';
 import { updateAllTop10Channels } from './lib/top10.js';
 import { checkAccess, describeInvocation } from './lib/owner.js';
 import { logCommand } from './lib/db.js';
+import {
+  COMPONENT_PREFIX as OWNERMENU_PREFIX,
+  handleComponent as handleOwnerMenuComponent,
+} from './commands/ownermenu.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +56,18 @@ if (client.commands.size === 0) {
 }
 
 client.on('interactionCreate', async (interaction) => {
+  // Buttons and modals from the owner menu. Routed by custom_id prefix so the
+  // menu owns its own component logic instead of this file growing a switch.
+  if (interaction.isButton() || interaction.isModalSubmit()) {
+    if (!interaction.customId?.startsWith(OWNERMENU_PREFIX)) return;
+    try {
+      await handleOwnerMenuComponent(interaction);
+    } catch (err) {
+      console.error('[ownermenu] Component failed:', err);
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const command = client.commands.get(interaction.commandName);

@@ -76,7 +76,7 @@ export function capToFieldLimit(lines, emptyText = '_None._', limit = FIELD_LIMI
  * @param {object} params.milestones   { [rank]: { ID, Points, Name, Rate } } for milestone ranks not yet passed
  * @param {Date} params.trackingStartedAt
  */
-export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt }) {
+export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt, idleMembers = [] }) {
   const now = latestSnapshot.ts;
   const currentPoints = league.Points;
 
@@ -237,6 +237,36 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     value: memberLines || 'No member data yet.',
     inline: false,
   });
+
+  // Who has stopped scoring, as its own section.
+  //
+  // The members list above shows running totals, and a total cannot answer
+  // "who has gone quiet" — somebody who contributed heavily this morning and
+  // nothing since still sits near the top of it. This is measured against the
+  // PREVIOUS POLL, so it follows POLL_INTERVAL_MINUTES: at the default it means
+  // "gained nothing in the last 10 minutes".
+  const pollMinutes = Number(process.env.POLL_INTERVAL_MINUTES) || 10;
+
+  if (idleMembers.length > 0) {
+    const idleLines = idleMembers.map((m) => {
+      const bell = m.linked ? '🔔' : '🔕';
+      return `${bell} **${formatName(m, { withDisplayName: false })}** — idle since <t:${m.idleSince}:R> · ${formatPoints(m.points)} pts`;
+    });
+
+    embed.addFields({
+      name: `😴 Inactive (${idleMembers.length}) — no points in the last ${pollMinutes}m`,
+      value: capToFieldLimit(idleLines, '_None._'),
+      inline: false,
+    });
+  } else if (members.length > 0) {
+    // Say so explicitly. A missing section is ambiguous — it could mean
+    // "everyone is active" or "the check didn't run".
+    embed.addFields({
+      name: '😴 Inactive (0)',
+      value: `✅ Everyone scored in the last ${pollMinutes} minutes.`,
+      inline: false,
+    });
+  }
 
   const pollIntervalMinutes = Number(process.env.POLL_INTERVAL_MINUTES) || 10;
   const nextUpdateUnix = now + pollIntervalMinutes * 60;
