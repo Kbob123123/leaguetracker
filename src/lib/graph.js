@@ -1,12 +1,29 @@
-import { formatName } from './robloxNames.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { formatName } from './robloxNames.js';
+import {
+  HOUSE,
+  SERIES_COLORS,
+  fillFor,
+  fullNumber,
+  loadWatermark,
+  backdropPlugin,
+  watermarkPlugin,
+  titlePlugin,
+  legendBoxPlugin,
+  statStripPlugin,
+  footnotePlugin,
+  processTimeNote,
+  houseScales,
+  housePadding,
+} from './chartTheme.js';
+import { resolveThumbnail } from './thumbnails.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = path.join(__dirname, '..', '..', 'assets', 'fonts');
 
-const width = 900;
-const height = 500;
+const width = 960;
+const height = 540;
 
 /**
  * Chart rendering is loaded LAZILY and never at module scope.
@@ -16,11 +33,13 @@ const height = 500;
  * libraries (the classic one is `libuuid.so.1`), a top-level import throws
  * while the module is still being evaluated — which takes down every command
  * that imports this file, and every command that imports something that
- * imports this file. That cost us /claninfo and /leagueinfo, neither of which
- * draws a chart at all.
+ * imports this file.
  *
  * Charts are decoration; the numbers are the product. Deferring the import to
  * first use means a missing system library costs a chart image, not a command.
+ *
+ * `chartTheme.js` follows the same rule — its watermark loader dynamic-imports
+ * `canvas` rather than importing it at the top.
  */
 let canvasPromise = null;
 
@@ -33,12 +52,12 @@ function getCanvas() {
     const canvas = new ChartJSNodeCanvas({
       width,
       height,
-      backgroundColour: '#2b2d31', // Discord dark theme background
+      backgroundColour: HOUSE.SURFACE,
       // Minimal Linux containers often ship with no fonts installed at all,
       // which renders chart text as empty boxes. Bundling a font and
       // registering it here makes output independent of the host.
       chartCallback: (ChartJS) => {
-        ChartJS.defaults.font.family = 'DejaVu Sans';
+        ChartJS.defaults.font.family = HOUSE.FONT;
       },
     });
 
@@ -69,75 +88,135 @@ async function render(config) {
   }
 }
 
-const MEMBER_COLORS = ['#5865F2', '#57F287', '#FEE75C', '#ED4245', '#EB459E'];
+// A league holds four members, so every one of them is always plotted — unlike
+// the clan bot, which has to rank and truncate at 75.
+const MAX_GRAPHED_MEMBERS = 4;
 
-// Ink tokens for the long-term history chart. Text never wears the series
-// colour — the coloured line carries identity, labels stay neutral.
-const INK = '#e8e8e6';
-const INK_MUTED = '#a8a8a4';
-const GRID = 'rgba(255,255,255,0.07)';
-// Validated against the #2b2d31 surface (contrast >= 3:1); single series, so
-// no adjacent-pair separation is required.
-const HISTORY_COLOR = '#3987e5';
+/** Clock labels for a timestamp series. */
+function clockLabels(rows, key = 'ts') {
+  return rows.map((r) =>
+    new Date(Number(r[key]) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  );
+}
+
+/**
+ * Build a house-styled line chart.
+ *
+ * Kept structurally identical to the clan bot's copy so the two stay easy to
+ * diff. The style itself lives in chartTheme.js, which IS byte-identical
+ * across the three bots.
+ *
+ * @param {object} p
+ * @param {string}   p.title        bold, centred, above the plot
+ * @param {string}   [p.subtitle]
+ * @param {string[]} p.labels
+ * @param {Array}    p.datasets     [{ label, values, color, fill }]
+ * @param {object}   [p.watermark]  loaded Image, or null
+ * @param {Array}    [p.stats]      [{ label, value }] strip under the title
+ * @param {string}   [p.footnote]   right-hand footnote; left is process time
+ * @param {boolean}  [p.legend]     force the legend box on/off
+ */
+async function houseLineChart({
+  title,
+  subtitle,
+  labels,
+  datasets,
+  watermark = null,
+  stats = null,
+  footnote = null,
+  legend = null,
+  yFormat = fullNumber,
+  xTickLimit = 8,
+  startedAt = Date.now(),
+}) {
+  // A single series is named by the title, so a one-row legend box would be
+  // pure noise. Two or more need naming.
+  const showLegend = legend ?? datasets.length > 1;
+
+  return render({
+    type: 'line',
+    data: {
+      labels,
+      datasets: datasets.map((d, i) => {
+        const color = d.color ?? SERIES_COLORS[i % SERIES_COLORS.length];
+        return {
+          label: d.label,
+          data: d.values,
+          borderColor: color,
+          backgroundColor: d.fill ? fillFor(color) : color,
+          borderWidth: 2,
+          pointRadius: d.pointRadius ?? (labels.length > 45 ? 0 : 2),
+          pointHoverRadius: 0,
+          tension: 0.35,
+          fill: Boolean(d.fill),
+          spanGaps: true,
+        };
+      }),
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      layout: {
+        padding: housePadding({
+          hasSubtitle: Boolean(subtitle),
+          hasFootnote: true,
+          hasStats: Boolean(stats && stats.length),
+        }),
+      },
+      // Both are drawn by house plugins instead, so Chart.js's own must be off
+      // or they would draw twice, in the wrong style and the wrong place.
+      plugins: { legend: { display: false }, title: { display: false } },
+      scales: houseScales({ yFormat, xTickLimit }),
+    },
+    plugins: [
+      backdropPlugin(),
+      watermarkPlugin(watermark),
+      titlePlugin({ title, subtitle }),
+      ...(stats && stats.length ? [statStripPlugin(stats, { y: subtitle ? 82 : 68 })] : []),
+      ...(showLegend
+        ? [
+            legendBoxPlugin(
+              datasets.map((d, i) => ({
+                label: d.label,
+                color: d.color ?? SERIES_COLORS[i % SERIES_COLORS.length],
+              }))
+            ),
+          ]
+        : []),
+      footnotePlugin({ left: processTimeNote(startedAt), right: footnote }),
+    ],
+  });
+}
 
 /**
  * Long-term points history for one league: one point per day.
  *
- * Single series, so there is no legend — the title names what's plotted.
+ * Single series, so no legend box — the title names what's plotted.
  */
-export async function renderHistoryChart(leagueName, rows) {
+export async function renderHistoryChart(leagueName, rows, { leagueIcon } = {}) {
   if (!rows || rows.length < 2) return null;
+  const startedAt = Date.now();
 
-  const buffer = await render({
-    type: 'line',
-    data: {
-      labels: rows.map((r) => r.day.slice(5)), // MM-DD; the year is noise here
-      datasets: [
-        {
-          data: rows.map((r) => Number(r.points)),
-          borderColor: HISTORY_COLOR,
-          backgroundColor: 'rgba(57,135,229,0.14)',
-          borderWidth: 2,
-          pointRadius: rows.length > 45 ? 0 : 3,
-          tension: 0.35,
-          fill: true,
-        },
-      ],
-    },
-    options: {
-      responsive: false,
-      layout: { padding: { top: 10, right: 16, bottom: 6, left: 8 } },
-      plugins: {
-        legend: { display: false },
-        title: {
-          display: true,
-          text: `${leagueName} — points over time`,
-          color: INK,
-          font: { size: 16, weight: 'bold' },
-          padding: { bottom: 10 },
-        },
+  const watermark = await loadWatermark(await resolveThumbnail(leagueIcon));
+
+  return houseLineChart({
+    title: leagueName,
+    subtitle: 'Points over time',
+    labels: rows.map((r) => r.day.slice(5)), // MM-DD; the year is noise here
+    datasets: [
+      {
+        label: 'Total Points',
+        values: rows.map((r) => Number(r.points)),
+        color: SERIES_COLORS[0],
+        fill: true,
+        pointRadius: rows.length > 45 ? 0 : 3,
       },
-      scales: {
-        x: {
-          grid: { display: false },
-          border: { color: GRID },
-          ticks: { color: INK_MUTED, font: { size: 11 }, maxRotation: 0, autoSkip: true, maxTicksLimit: 10 },
-        },
-        y: {
-          grid: { color: GRID, drawTicks: false },
-          border: { display: false },
-          ticks: {
-            color: INK_MUTED,
-            font: { size: 11 },
-            maxTicksLimit: 6,
-            callback: (v) => (Math.abs(v) >= 1e6 ? `${(v / 1e6).toFixed(2)}M` : `${(v / 1e3).toFixed(0)}K`),
-          },
-        },
-      },
-    },
+    ],
+    watermark,
+    footnote: `${rows.length} days`,
+    xTickLimit: 10,
+    startedAt,
   });
-
-  return buffer;
 }
 
 /**
@@ -147,11 +226,12 @@ export async function renderHistoryChart(leagueName, rows) {
  * history from player_points_history (a different table/shape) rather than
  * the channel-tracking snapshots table.
  */
-export async function renderMemberGraphFromPoints(pointsHistory, leagueName) {
+export async function renderMemberGraphFromPoints(pointsHistory, leagueName, opts = {}) {
   if (!pointsHistory.length) return null;
   return renderMemberGraph(
     pointsHistory.map((p) => ({ ts: p.ts, members_json: JSON.stringify(p.members) })),
-    leagueName
+    leagueName,
+    opts
   );
 }
 
@@ -160,15 +240,16 @@ export async function renderMemberGraphFromPoints(pointsHistory, leagueName) {
  * history. `snapshots` is an array of DB rows (oldest first), each with a
  * parsed members_json of [{userId, displayName, points}].
  */
-export async function renderMemberGraph(snapshots, leagueName) {
+export async function renderMemberGraph(snapshots, leagueName, { leagueIcon } = {}) {
   if (!snapshots.length) return null;
+  const startedAt = Date.now();
 
   const parsed = snapshots.map((s) => ({
     ts: s.ts,
     members: JSON.parse(s.members_json),
   }));
 
-  // Union of member display names seen across the window (handles roster changes).
+  // Union of members seen across the window (handles roster changes mid-window).
   const namesInOrder = [];
   const seen = new Set();
   for (const snap of parsed) {
@@ -180,56 +261,24 @@ export async function renderMemberGraph(snapshots, leagueName) {
     }
   }
 
-  const labels = parsed.map((s) =>
-    new Date(s.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  );
+  const plotted = namesInOrder.slice(0, MAX_GRAPHED_MEMBERS);
+  const watermark = await loadWatermark(await resolveThumbnail(leagueIcon));
 
-  const datasets = namesInOrder.slice(0, 4).map((who, i) => ({
-    // Username only — a chart legend has no room for "user (Display Name)".
-    label: formatName(who, { withDisplayName: false }),
-    data: parsed.map((snap) => {
-      const m = snap.members.find((x) => x.userId === who.userId);
-      return m ? m.points : null;
-    }),
-    borderColor: MEMBER_COLORS[i % MEMBER_COLORS.length],
-    backgroundColor: MEMBER_COLORS[i % MEMBER_COLORS.length],
-    spanGaps: true,
-    tension: 0.35,
-    pointRadius: 2,
-    borderWidth: 2,
-  }));
-
-  const config = {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      plugins: {
-        title: {
-          display: true,
-          text: `${leagueName} — Member Points`,
-          color: '#f2f3f5',
-          font: { size: 18, family: 'DejaVu Sans' },
-        },
-        legend: {
-          labels: { color: '#f2f3f5', font: { family: 'DejaVu Sans' } },
-        },
-      },
-      scales: {
-        x: {
-          ticks: { color: '#b5bac1', font: { family: 'DejaVu Sans' } },
-          grid: { color: '#3f4147' },
-        },
-        y: {
-          ticks: {
-            color: '#b5bac1',
-            font: { family: 'DejaVu Sans' },
-            callback: (value) => Number(value).toLocaleString(),
-          },
-          grid: { color: '#3f4147' },
-        },
-      },
-    },
-  };
-
-  return render(config);
+  return houseLineChart({
+    title: leagueName,
+    subtitle: 'Member points',
+    labels: clockLabels(parsed),
+    datasets: plotted.map((who, i) => ({
+      // Username only — a chart legend has no room for "user (Display Name)".
+      label: formatName(who, { withDisplayName: false }),
+      values: parsed.map((snap) => {
+        const m = snap.members.find((x) => x.userId === who.userId);
+        return m ? m.points : null;
+      }),
+      color: SERIES_COLORS[i % SERIES_COLORS.length],
+    })),
+    watermark,
+    footnote: `${parsed.length} snapshots`,
+    startedAt,
+  });
 }

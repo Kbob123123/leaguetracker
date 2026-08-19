@@ -160,7 +160,9 @@ export async function execute(interaction) {
       .sort((a, b) => a.ts - b.ts);
 
     if (pointsHistory.length >= 2) {
-      const buffer = await renderMemberGraphFromPoints(pointsHistory, league.Name);
+      const buffer = await renderMemberGraphFromPoints(pointsHistory, league.Name, {
+        leagueIcon: league.Icon,
+      });
       if (buffer) {
         const attachment = new AttachmentBuilder(buffer, { name: 'league-graph.png' });
         embed.setImage('attachment://league-graph.png');

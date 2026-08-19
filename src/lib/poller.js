@@ -195,7 +195,7 @@ export async function pollOneChannel(client, trackedRow) {
   const files = [];
   const recentSnapshots = getRecentSnapshots(channelId, GRAPH_WINDOW_SECONDS);
   if (recentSnapshots.length >= 2) {
-    const buffer = await renderMemberGraph(recentSnapshots, league.Name);
+    const buffer = await renderMemberGraph(recentSnapshots, league.Name, { leagueIcon: league.Icon });
     if (buffer) {
       const attachment = new AttachmentBuilder(buffer, { name: 'league-graph.png' });
       embed.setImage('attachment://league-graph.png');
