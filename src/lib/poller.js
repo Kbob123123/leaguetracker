@@ -16,6 +16,7 @@ import {
   getAllLeagueRateInputs,
 } from './db.js';
 import { buildLeagueEmbed } from './embed.js';
+import { resolveThumbnail } from './thumbnails.js';
 import { renderMemberGraph } from './graph.js';
 import { resolveNames, formatName } from './robloxNames.js';
 import { hourlyRate } from './rates.js';
@@ -190,6 +191,7 @@ export async function pollOneChannel(client, trackedRow) {
     // Every tracked league's points + rate, so the projection can count exact
     // finishing position rather than bucket into milestone brackets.
     leagueRateInputs: getAllLeagueRateInputs(),
+    iconUrl: await resolveThumbnail(league.Icon).catch(() => null),
   });
 
   const files = [];

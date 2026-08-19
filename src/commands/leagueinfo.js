@@ -8,6 +8,7 @@ import {
 } from '../lib/db.js';
 import { hourlyRate, formatPoints, formatRate } from '../lib/rates.js';
 import { renderMemberGraphFromPoints } from '../lib/graph.js';
+import { resolveThumbnail } from '../lib/thumbnails.js';
 import { resolveNames, formatName } from '../lib/robloxNames.js';
 
 const HOUR_SECONDS = 3600;
@@ -86,10 +87,11 @@ export async function execute(interaction) {
     .setDescription(headerLines.join('\n'))
     .setTimestamp();
 
-  if (league.Icon) {
-    const iconId = league.Icon.replace('rbxassetid://', '');
-    embed.setThumbnail(`https://www.roblox.com/asset-thumbnail/image?assetId=${iconId}&width=150&height=150&format=png`);
-  }
+  // The old www.roblox.com/asset-thumbnail URL template 404s for every asset,
+  // and fails inside an <img> tag, so Discord showed no thumbnail and nothing
+  // logged an error. Resolved through the thumbnail service instead.
+  const iconUrl = await resolveThumbnail(league.Icon).catch(() => null);
+  if (iconUrl) embed.setThumbnail(iconUrl);
 
   // Kept from the old thin /leagueinfo: neighbours are the one thing the
   // snapshot view never showed, and they're already fetched for the rank.

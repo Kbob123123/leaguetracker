@@ -81,7 +81,7 @@ export function capToFieldLimit(lines, emptyText = '_None._', limit = FIELD_LIMI
  * @param {object} params.milestones   { [rank]: { ID, Points, Name, Rate } } for milestone ranks not yet passed
  * @param {Date} params.trackingStartedAt
  */
-export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt, idleMembers = [], leagueRateInputs = [] }) {
+export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt, idleMembers = [], leagueRateInputs = [], iconUrl = null }) {
   const now = latestSnapshot.ts;
   const currentPoints = league.Points;
 
@@ -99,10 +99,11 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     .setDescription(buildSummaryLine({ neighbors, leagueRate, aheadResult }))
     .setTimestamp(new Date(now * 1000));
 
-  if (league.Icon) {
-    const iconId = league.Icon.replace('rbxassetid://', '');
-    embed.setThumbnail(`https://www.roblox.com/asset-thumbnail/image?assetId=${iconId}&width=150&height=150&format=png`);
-  }
+  // Resolved by the caller and passed in, never built from a URL template:
+  // the old www.roblox.com/asset-thumbnail route returns 404 for every asset,
+  // and because it fails inside an <img> tag Discord just showed no thumbnail
+  // and nothing logged an error.
+  if (iconUrl) embed.setThumbnail(iconUrl);
 
   embed.addFields(
     { name: '🏆 Points', value: `**${formatPoints(currentPoints)}**`, inline: true },
