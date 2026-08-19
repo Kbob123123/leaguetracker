@@ -146,3 +146,20 @@ export function projectExactPlacement(projectedPoints, leagueRateInputs, ownLeag
   const tracked = leagueRateInputs.length;
   return { rank: above + 1, of: tracked, confident: above + 1 <= tracked };
 }
+
+/**
+ * Identifier for the battle currently being fought: the date of the reset it
+ * will end at, as YYYY-MM-DD.
+ *
+ * Leagues have no battle NAMES the way clans do (LunarBattle2026 and so on),
+ * so the reset date is the only stable label available.
+ *
+ * Deriving the key from the UPCOMING reset is what makes snapshotting robust
+ * without having to catch the reset moment exactly. Every hourly pass
+ * overwrites the row for the current key, so whatever was written last before
+ * the reset stands as that battle's final result; afterwards the key rolls to
+ * the next Saturday and a fresh row starts accumulating.
+ */
+export function currentBattleKey(fromDate = new Date()) {
+  return new Date(nextBattleEndUnix(fromDate) * 1000).toISOString().slice(0, 10);
+}

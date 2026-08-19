@@ -241,6 +241,45 @@ CREATE TABLE IF NOT EXISTS bot_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+-- League battle history, captured by us because the API keeps none.
+--
+-- Unlike clans — whose detail response ships a rolling archive of ~30 past
+-- battles — the league endpoints expose ONLY current standings. When the
+-- Saturday reset lands, the previous battle's points are simply gone. So the
+-- only way to have league history is to record it ourselves as it happens.
+--
+-- battle_key is the date of the reset the battle ends at (see
+-- currentBattleKey). Every hourly pass overwrites the row for the current key,
+-- so the last write before a reset stands as that battle's final result. This
+-- means we never have to catch the reset moment exactly.
+--
+-- Consequence worth knowing: this starts empty and gains one battle a week,
+-- and a week where the bot was down across the reset is lost for good.
+CREATE TABLE IF NOT EXISTS league_battle_results (
+  battle_key  TEXT NOT NULL,
+  league_id   TEXT NOT NULL,
+  league_name TEXT NOT NULL,
+  place       INTEGER,
+  points      INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (battle_key, league_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lbr_battle ON league_battle_results (battle_key, points DESC);
+
+CREATE TABLE IF NOT EXISTS league_battle_contributions (
+  battle_key  TEXT NOT NULL,
+  user_id     TEXT NOT NULL,
+  username    TEXT,
+  league_id   TEXT NOT NULL,
+  league_name TEXT,
+  points      INTEGER NOT NULL,
+  PRIMARY KEY (battle_key, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_lbc_battle ON league_battle_contributions (battle_key, points DESC);
+CREATE INDEX IF NOT EXISTS idx_lbc_user ON league_battle_contributions (user_id);
 `);
 
 /**
@@ -1074,4 +1113,118 @@ export function getAllLeagueRateInputs(windowSeconds = 2 * 3600) {
     const rate = elapsedHours >= 0.16 ? (e.last.points - e.first.points) / elapsedHours : 0;
     return { leagueId: e.leagueId, leagueName: e.leagueName, points: e.last.points, rate };
   });
+}
+
+/* ---------------------------------------------------------------------------
+ * League battle history (captured by us — the API keeps none)
+ * ------------------------------------------------------------------------- */
+
+/** Overwrite the current battle's standings for a batch of leagues. */
+export function recordLeagueBattleResults(battleKey, rows) {
+  const stmt = db.prepare(`
+    INSERT INTO league_battle_results (battle_key, league_id, league_name, place, points, updated_at)
+    VALUES (@battleKey, @leagueId, @leagueName, @place, @points, @ts)
+    ON CONFLICT(battle_key, league_id) DO UPDATE SET
+      league_name = excluded.league_name, place = excluded.place,
+      points = excluded.points, updated_at = excluded.updated_at
+  `);
+  const ts = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      stmt.run({
+        battleKey,
+        leagueId: String(r.leagueId),
+        leagueName: r.leagueName,
+        place: Number.isFinite(r.place) ? r.place : null,
+        points: r.points ?? 0,
+        ts,
+      });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Overwrite the current battle's per-player contributions. */
+export function recordLeagueBattleContributions(battleKey, rows) {
+  const stmt = db.prepare(`
+    INSERT INTO league_battle_contributions (battle_key, user_id, username, league_id, league_name, points)
+    VALUES (@battleKey, @userId, @username, @leagueId, @leagueName, @points)
+    ON CONFLICT(battle_key, user_id) DO UPDATE SET
+      points = excluded.points, username = excluded.username,
+      league_id = excluded.league_id, league_name = excluded.league_name
+  `);
+
+  db.exec('BEGIN');
+  try {
+    for (const r of rows) {
+      stmt.run({
+        battleKey,
+        userId: String(r.userId),
+        username: r.username ?? null,
+        leagueId: String(r.leagueId),
+        leagueName: r.leagueName ?? null,
+        points: r.points ?? 0,
+      });
+    }
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/**
+ * One player's result in every league battle we captured, newest first.
+ *
+ * The CURRENT battle is excluded by the caller when it wants finished ones
+ * only — an in-progress battle's numbers are not a result yet.
+ */
+export function getPlayerLeagueBattles(userId) {
+  return db
+    .prepare(
+      `SELECT c.battle_key, c.points, c.league_id, c.league_name,
+              r.place AS league_place, r.points AS league_points
+       FROM league_battle_contributions c
+       LEFT JOIN league_battle_results r
+         ON r.battle_key = c.battle_key AND r.league_id = c.league_id
+       WHERE c.user_id = ?
+       ORDER BY c.battle_key DESC`
+    )
+    .all(String(userId));
+}
+
+/** Where a score ranks among everyone recorded for that league battle. */
+export function getLeagueBattlePercentile(battleKey, points) {
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM league_battle_contributions WHERE battle_key = ?`)
+    .get(battleKey);
+  if (!total) return null;
+
+  const { below } = db
+    .prepare(`SELECT COUNT(*) AS below FROM league_battle_contributions WHERE battle_key = ? AND points < ?`)
+    .get(battleKey, points);
+  const { above } = db
+    .prepare(`SELECT COUNT(*) AS above FROM league_battle_contributions WHERE battle_key = ? AND points > ?`)
+    .get(battleKey, points);
+
+  return { fraction: below / total, below, total, rank: above + 1 };
+}
+
+/** Find a player in the league battle archive by username or display name. */
+export function findLeagueBattlePlayersByName(query, limit = 5) {
+  return db
+    .prepare(
+      `SELECT c.user_id, c.username, COUNT(*) AS battles, MAX(c.points) AS best_points
+       FROM league_battle_contributions c
+       WHERE LOWER(COALESCE(c.username, '')) LIKE '%' || LOWER(?) || '%'
+       GROUP BY c.user_id
+       ORDER BY best_points DESC
+       LIMIT ?`
+    )
+    .all(query, limit);
 }

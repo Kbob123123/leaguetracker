@@ -10,8 +10,11 @@ import {
   pruneDailyPoints,
   recordPlayerDailyBatch,
   prunePlayerDailyPoints,
+  recordLeagueBattleResults,
+  recordLeagueBattleContributions,
 } from './db.js';
 import { resolveNames, formatName } from './robloxNames.js';
+import { currentBattleKey } from './battleTimer.js';
 
 // How many top leagues (by Points) to pull individual player contributions
 // from. This is a deliberate tradeoff: going wider (e.g. all ~90k+ leagues)
@@ -124,6 +127,42 @@ export async function rebuildPlayerRankings() {
     }))
   );
   prunePlayerDailyPoints();
+
+  // Snapshot the battle currently being fought.
+  //
+  // The league API keeps no history at all — when Saturday's reset lands, the
+  // previous battle's points are gone. Overwriting the same battle_key every
+  // pass means the last write before a reset becomes that battle's permanent
+  // result, without needing to catch the reset moment.
+  try {
+    const battleKey = currentBattleKey();
+
+    recordLeagueBattleResults(
+      battleKey,
+      targets.map((t, i) => ({
+        leagueId: t.ID,
+        leagueName: t.Name,
+        place: i + 1,
+        points: t.Points,
+      }))
+    );
+
+    recordLeagueBattleContributions(
+      battleKey,
+      resolved.map((p) => ({
+        userId: p.userId,
+        username: p.username,
+        leagueId: p.leagueId,
+        leagueName: p.leagueName,
+        points: p.points,
+      }))
+    );
+
+    console.log(`[rankings] Battle snapshot stored for ${battleKey}.`);
+  } catch (err) {
+    // History is a bonus; never let it break the rankings rebuild.
+    console.warn('[rankings] Could not store the league battle snapshot:', err.message);
+  }
 
   // A player could theoretically appear more than once if they're in a
   // league's contributions under edge-case data quirks — keep the higher-points entry.

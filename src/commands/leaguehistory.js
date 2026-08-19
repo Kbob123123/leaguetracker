@@ -1,152 +1,83 @@
-import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import {
-  getDailyHistory,
-  findDailyLeagueByName,
-  getPlayerDailyHistory,
-  findPlayerDailyByName,
+  getPlayerLeagueBattles,
+  getLeagueBattlePercentile,
+  findLeagueBattlePlayersByName,
 } from '../lib/db.js';
-import { getLeagueDetail } from '../lib/ps99Api.js';
-import { renderHistoryChart } from '../lib/graph.js';
-import { formatPoints, formatRate } from '../lib/rates.js';
+import { currentBattleKey } from '../lib/battleTimer.js';
+import { capToFieldLimit, DESCRIPTION_LIMIT } from '../lib/embed.js';
+import { formatPoints } from '../lib/rates.js';
 
-// Charts either a player or a league. `league` is no longer required, because
-// player history is the more useful view day to day — but the league mode was
-// working and costs nothing to keep, so this takes exactly one of the two
-// rather than replacing one with the other.
+// Player-only, by design (for now).
+//
+// History here means PAST BATTLES, not past days. Unlike clans — whose API
+// ships a rolling archive of ~30 battles — the league endpoints expose only
+// current standings, so every row behind this command is one the bot captured
+// itself at a Saturday reset. That has a hard consequence the embed states
+// plainly: there is nothing here for battles that finished before the bot
+// started recording, and nothing can backfill them.
 export const data = new SlashCommandBuilder()
   .setName('leaguehistory')
-  .setDescription('Long-term points history for a player or a league, as a daily chart.')
+  .setDescription('A player’s results in past league battles, with percentiles.')
   .addStringOption((opt) =>
-    opt.setName('player').setDescription('Roblox username — charts this player over time')
-  )
-  .addStringOption((opt) =>
-    opt.setName('league').setDescription('League name (exact, case-insensitive)')
-  )
-  .addIntegerOption((opt) =>
-    opt
-      .setName('days')
-      .setDescription('How far back to chart (default 30)')
-      .addChoices(
-        { name: '7 days', value: 7 },
-        { name: '30 days', value: 30 },
-        { name: '90 days', value: 90 },
-        { name: '180 days', value: 180 }
-      )
+    opt.setName('player').setDescription('Roblox username').setRequired(true)
   );
+
+function placeLabel(place) {
+  if (place == null) return '—';
+  if (place === 1) return '🥇 1st';
+  if (place === 2) return '🥈 2nd';
+  if (place === 3) return '🥉 3rd';
+  return `#${place.toLocaleString()}`;
+}
+
+/**
+ * "2026-08-21" -> "Sat 22 Aug 2026", the date people actually experienced.
+ *
+ * The key is the UTC date of the reset INSTANT, and a Saturday 2am AEST reset
+ * falls on Friday afternoon UTC — so labelling the raw key showed every battle
+ * ending on a Friday, which is not the day anyone played it. Shifting a day
+ * converts to the Australian date the reset belongs to, and holds under AEDT
+ * too, since that only moves the instant an hour earlier in UTC.
+ */
+function battleLabel(key) {
+  const d = new Date(`${key}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return key;
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
 
 export async function execute(interaction) {
   await interaction.deferReply();
 
-  const playerQuery = interaction.options.getString('player')?.trim();
-  const leagueQuery = interaction.options.getString('league')?.trim();
-  const days = interaction.options.getInteger('days') ?? 30;
-
-  if (playerQuery && leagueQuery) {
-    await interaction.editReply('❌ Pick one — either `player:` or `league:`, not both.');
-    return;
-  }
-  if (!playerQuery && !leagueQuery) {
-    await interaction.editReply(
-      '❌ Give me either `player:<roblox username>` or `league:<league name>` to chart.'
-    );
-    return;
-  }
-
-  if (playerQuery) return showPlayerHistory(interaction, playerQuery, days);
-
-  const query = leagueQuery;
-
-  // Resolve by stored name first — that costs no API call and works even if
-  // the league has since dropped out of the top 1,000. Fall back to a live
-  // lookup so a correctly-spelled league that simply has no history yet gets
-  // an accurate message rather than "not found".
-  let leagueId = null;
-  let leagueName = query;
-
-  const stored = findDailyLeagueByName(query);
-  if (stored) {
-    leagueId = stored.league_id;
-    leagueName = stored.league_name;
-  } else {
-    const live = await getLeagueDetail(query).catch(() => null);
-    if (!live) {
-      await interaction.editReply(`❌ No league named **${query}** found.`);
-      return;
-    }
-    leagueId = live.ID;
-    leagueName = live.Name;
-  }
-
-  const rows = getDailyHistory(leagueId, days);
-
-  if (rows.length < 2) {
-    await interaction.editReply(
-      `📊 **${leagueName}** doesn't have enough history yet — ${rows.length === 0 ? 'nothing has' : 'only one day has'} been recorded so far.\n\n` +
-        '_History builds up one point per day. A chart needs at least two days, ' +
-        'so check back tomorrow._'
-    );
-    return;
-  }
-
-  const first = rows[0];
-  const last = rows[rows.length - 1];
-  const gained = Number(last.points) - Number(first.points);
-  const spanDays = Math.max(1, rows.length - 1);
-
-  const embed = new EmbedBuilder()
-    .setTitle(`📊 ${leagueName} — ${rows.length} days of history`)
-    .setColor(0x3987e5)
-    .setDescription(
-      [
-        `**Now:** ${formatPoints(Number(last.points))} pts`,
-        `**${spanDays} day${spanDays === 1 ? '' : 's'} ago:** ${formatPoints(Number(first.points))} pts`,
-        `**Gained:** ${formatPoints(gained)} (${formatRate(Math.round(gained / spanDays / 24))} average)`,
-      ].join('\n')
-    )
-    .setTimestamp()
-    .setFooter({ text: 'One reading per day · recorded hourly, kept for 180 days' });
-
-  const files = [];
-  const chart = await renderHistoryChart(leagueName, rows).catch((err) => {
-    console.warn('[leaguehistory] Chart render failed:', err.message);
-    return null;
-  });
-
-  if (chart) {
-    files.push(new AttachmentBuilder(chart, { name: 'history.png' }));
-    embed.setImage('attachment://history.png');
-  }
-
-  await interaction.editReply({ embeds: [embed], files });
-}
-
-/**
- * Per-player daily chart.
- *
- * Sourced entirely from player_daily_points, which the hourly rankings job
- * fills. Leagues expose no historical archive the way clan Battles do, so this
- * can only ever reach back as far as the bot itself — the embed says so
- * rather than letting a short chart imply the player only just started.
- */
-async function showPlayerHistory(interaction, query, days) {
+  const query = interaction.options.getString('player', true).trim();
   if (query.length < 2) {
     await interaction.editReply('❌ Enter at least 2 characters of a username.');
     return;
   }
 
-  const matches = findPlayerDailyByName(query);
+  const matches = findLeagueBattlePlayersByName(query);
 
   if (matches.length === 0) {
     await interaction.editReply(
-      `❌ No recorded history for a player matching **${query}**.\n\n` +
-        '_Player history only covers members of the top-1,000 leagues, and only from when ' +
-        'the bot started recording. If they joined a ranked league recently, check back tomorrow._'
+      `❌ No league battle history for a player matching **${query}**.\n\n` +
+        '_League battles are recorded by this bot as they happen — the PS99 API keeps no ' +
+        'archive of them. Only players in the top-1,000 leagues are scanned, and only ' +
+        'battles fought since the bot started recording exist at all._'
     );
     return;
   }
 
   if (matches.length > 1) {
-    const list = matches.map((m) => `• **${m.username ?? m.user_id}** — ${m.league_name ?? 'unknown league'}`);
+    const list = matches.map(
+      (m) => `• **${m.username ?? m.user_id}** — ${m.battles} battle(s), best ⭐ ${formatPoints(m.best_points)}`
+    );
     await interaction.editReply(
       `⚠️ **${matches.length}** players match that. Be more specific:\n${list.join('\n')}`
     );
@@ -154,48 +85,69 @@ async function showPlayerHistory(interaction, query, days) {
   }
 
   const player = matches[0];
-  const rows = getPlayerDailyHistory(player.user_id, days);
+  const all = getPlayerLeagueBattles(player.user_id);
 
-  if (rows.length < 2) {
+  // The battle in progress is not a result yet, so it is shown separately
+  // rather than mixed in with finished ones and counted as history.
+  const liveKey = currentBattleKey();
+  const finished = all.filter((b) => b.battle_key !== liveKey);
+  const inProgress = all.find((b) => b.battle_key === liveKey);
+
+  if (finished.length === 0) {
+    const soFar = inProgress
+      ? `\n\nRight now in the battle ending **${battleLabel(liveKey)}** they have ` +
+        `⭐ **${formatPoints(inProgress.points)}** for ${inProgress.league_name ?? 'their league'}.`
+      : '';
+
     await interaction.editReply(
-      `📊 **${player.username ?? player.user_id}** doesn't have enough history yet — ` +
-        `${rows.length === 0 ? 'nothing has' : 'only one day has'} been recorded so far.\n\n` +
-        '_One reading per day, and a chart needs two. Check back tomorrow._'
+      `📜 **${player.username ?? player.user_id}** has no finished league battles recorded yet.${soFar}\n\n` +
+        '_The first result appears after the next Saturday reset (2am AEST). ' +
+        'The API keeps no league battle history, so this archive only grows forwards._'
     );
     return;
   }
 
-  const first = rows[0];
-  const last = rows[rows.length - 1];
-  const gained = Number(last.points) - Number(first.points);
-  const spanDays = Math.max(1, rows.length - 1);
-
-  const embed = new EmbedBuilder()
-    .setTitle(`📊 ${player.username ?? player.user_id} — ${rows.length} days of history`)
-    .setColor(0x3987e5)
-    .setDescription(
-      [
-        `⭐ **Now:** ${formatPoints(Number(last.points))} pts`,
-        `🕒 **${spanDays} day${spanDays === 1 ? '' : 's'} ago:** ${formatPoints(Number(first.points))} pts`,
-        `📈 **Gained:** ${formatPoints(gained)} (${formatRate(Math.round(gained / spanDays / 24))} average)`,
-        `🛡️ **League:** ${last.league_name ?? 'unknown'}`,
-      ].join('\n')
-    )
-    .setTimestamp()
-    .setFooter({
-      text: 'Only goes back as far as the bot has been running — leagues expose no historical archive.',
-    });
-
-  const files = [];
-  const chart = await renderHistoryChart(player.username ?? String(player.user_id), rows).catch((err) => {
-    console.warn('[leaguehistory] Player chart render failed:', err.message);
-    return null;
+  const lines = finished.map((b) => {
+    const pct = getLeagueBattlePercentile(b.battle_key, b.points);
+    const standing = pct
+      ? `beat **${(pct.fraction * 100).toFixed(2)}%** · #${pct.rank.toLocaleString()} of ${pct.total.toLocaleString()}`
+      : '_no comparison data_';
+    return (
+      `**${battleLabel(b.battle_key)}** — ⭐ ${formatPoints(b.points)}\n` +
+      `└ 🏅 ${standing}\n` +
+      `└ 🛡️ ${b.league_name ?? '?'} finished ${placeLabel(b.league_place)}`
+    );
   });
 
-  if (chart) {
-    files.push(new AttachmentBuilder(chart, { name: 'history.png' }));
-    embed.setImage('attachment://history.png');
+  const best = finished.reduce((a, b) => (b.points > a.points ? b : a), finished[0]);
+  const bestPct = getLeagueBattlePercentile(best.battle_key, best.points);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📜 ${player.username ?? player.user_id} — past league battles`)
+    .setColor(0x3987e5)
+    .setDescription(capToFieldLimit(lines, '_None._', DESCRIPTION_LIMIT))
+    .addFields(
+      { name: '📦 Battles', value: String(finished.length), inline: true },
+      { name: '⭐ Best score', value: formatPoints(best.points), inline: true },
+      {
+        name: '🏅 Best percentile',
+        value: bestPct ? `${(bestPct.fraction * 100).toFixed(2)}%` : '—',
+        inline: true,
+      }
+    )
+    .setTimestamp();
+
+  if (inProgress) {
+    embed.addFields({
+      name: `⏳ In progress — ends ${battleLabel(liveKey)}`,
+      value: `⭐ ${formatPoints(inProgress.points)} for ${inProgress.league_name ?? 'their league'}`,
+      inline: false,
+    });
   }
 
-  await interaction.editReply({ embeds: [embed], files });
+  embed.setFooter({
+    text: 'Recorded by this bot at each Saturday reset — the PS99 API keeps no league battle archive.',
+  });
+
+  await interaction.editReply({ embeds: [embed] });
 }
