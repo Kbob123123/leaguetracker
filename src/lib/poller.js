@@ -13,6 +13,7 @@ import {
   getLatestLeaguePoints,
   getLeagueIdsNearRank,
   recordDailyPointsBatch,
+  getAllLeagueRateInputs,
 } from './db.js';
 import { buildLeagueEmbed } from './embed.js';
 import { renderMemberGraph } from './graph.js';
@@ -186,6 +187,9 @@ export async function pollOneChannel(client, trackedRow) {
     milestones: milestonesWithRates,
     trackingStartedAt: new Date(startedAt * 1000),
     idleMembers,
+    // Every tracked league's points + rate, so the projection can count exact
+    // finishing position rather than bucket into milestone brackets.
+    leagueRateInputs: getAllLeagueRateInputs(),
   });
 
   const files = [];

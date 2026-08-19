@@ -114,3 +114,35 @@ export function projectPlacementBracket(projectedPoints, milestones, fromDate = 
   const loosest = ranks[ranks.length - 1];
   return `outside top ${loosest}`;
 }
+
+/**
+ * Exact projected finishing rank, rather than a "top 50 / top 100" bucket.
+ *
+ * Projects EVERY league we hold a rate for to battle end and counts how many
+ * finish above us. The bracket version could only ever place us relative to
+ * three or four milestone thresholds, so "outside top 100" covered ranks 101
+ * and 900 identically.
+ *
+ * Returns { rank, of, confident } or null when there isn't enough history yet.
+ * `confident` is false when our own projection lands outside the set of
+ * leagues we track, where the true rank could be anywhere below.
+ */
+export function projectExactPlacement(projectedPoints, leagueRateInputs, ownLeagueId, fromDate = new Date()) {
+  if (projectedPoints == null || !Array.isArray(leagueRateInputs) || leagueRateInputs.length === 0) {
+    return null;
+  }
+
+  const hoursLeft = hoursUntilBattleEnd(fromDate);
+
+  let above = 0;
+  for (const league of leagueRateInputs) {
+    // Skip ourselves — being counted as ahead of our own projection would
+    // silently add one to every result.
+    if (ownLeagueId && league.leagueId === ownLeagueId) continue;
+    const projected = league.points + (league.rate ?? 0) * hoursLeft;
+    if (projected > projectedPoints) above += 1;
+  }
+
+  const tracked = leagueRateInputs.length;
+  return { rank: above + 1, of: tracked, confident: above + 1 <= tracked };
+}

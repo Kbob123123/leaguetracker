@@ -1038,3 +1038,40 @@ export function setMeta(key, value) {
      ON CONFLICT(key) DO UPDATE SET value = excluded.value`
   ).run(key, String(value));
 }
+
+/**
+ * Latest and ~an-hour-ago points for every league we hold history for.
+ *
+ * Feeds the exact placement projection: with a points reading and a rate for
+ * each of the top-N leagues, every one of them can be projected to battle end
+ * and the finishing order simply counted, instead of being bucketed into
+ * "top 50 / top 100" by a handful of milestone thresholds.
+ */
+export function getAllLeagueRateInputs(windowSeconds = 2 * 3600) {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSeconds;
+  const rows = db
+    .prepare(
+      `SELECT league_id, league_name, points, ts FROM league_points_history
+       WHERE ts >= ? ORDER BY league_id ASC, ts ASC`
+    )
+    .all(cutoff);
+
+  const byLeague = new Map();
+  for (const row of rows) {
+    let entry = byLeague.get(row.league_id);
+    if (!entry) {
+      entry = { leagueId: row.league_id, leagueName: row.league_name, first: row, last: row };
+      byLeague.set(row.league_id, entry);
+    }
+    entry.last = row;
+    entry.leagueName = row.league_name;
+  }
+
+  return [...byLeague.values()].map((e) => {
+    const elapsedHours = (e.last.ts - e.first.ts) / 3600;
+    // Under ~10 minutes of separation the difference is mostly noise, so the
+    // league is treated as stationary rather than given a wild extrapolated rate.
+    const rate = elapsedHours >= 0.16 ? (e.last.points - e.first.points) / elapsedHours : 0;
+    return { leagueId: e.leagueId, leagueName: e.leagueName, points: e.last.points, rate };
+  });
+}

@@ -1,6 +1,11 @@
 import { EmbedBuilder } from 'discord.js';
 import { hourlyRate, timeToOvertake, formatDuration, formatRate, formatPoints } from './rates.js';
-import { nextBattleEndUnix, projectPointsAtBattleEnd, projectPlacementBracket } from './battleTimer.js';
+import {
+  nextBattleEndUnix,
+  projectPointsAtBattleEnd,
+  projectPlacementBracket,
+  projectExactPlacement,
+} from './battleTimer.js';
 import { getPlayerRanking } from './db.js';
 import { formatName } from './robloxNames.js';
 
@@ -76,7 +81,7 @@ export function capToFieldLimit(lines, emptyText = '_None._', limit = FIELD_LIMI
  * @param {object} params.milestones   { [rank]: { ID, Points, Name, Rate } } for milestone ranks not yet passed
  * @param {Date} params.trackingStartedAt
  */
-export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt, idleMembers = [] }) {
+export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neighbors, milestones, trackingStartedAt, idleMembers = [], leagueRateInputs = [] }) {
   const now = latestSnapshot.ts;
   const currentPoints = league.Points;
 
@@ -180,13 +185,24 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
   if (leagueRate != null) {
     const battleEndUnix = nextBattleEndUnix(new Date(now * 1000));
     const projectedPoints = projectPointsAtBattleEnd(currentPoints, leagueRate, new Date(now * 1000));
-    const placementBracket = projectPlacementBracket(projectedPoints, milestones, new Date(now * 1000));
+    // Exact rank when we have enough league history to compute one; the old
+    // milestone bracket is only a fallback now, because it could not tell
+    // rank 101 from rank 900 — both were just "outside top 100".
+    const exact = projectExactPlacement(projectedPoints, leagueRateInputs, league.ID, new Date(now * 1000));
+    const placementBracket = exact ? null : projectPlacementBracket(projectedPoints, milestones, new Date(now * 1000));
 
     const lines = [
       `~${formatPoints(projectedPoints)} pts if this rate holds`,
     ];
 
-    if (placementBracket) {
+    if (exact) {
+      lines.push(
+        `Projected finish: **#${exact.rank.toLocaleString()}**` +
+          (exact.confident
+            ? ` of ${exact.of.toLocaleString()} tracked leagues`
+            : ` or lower — beyond the ${exact.of.toLocaleString()} leagues we track`)
+      );
+    } else if (placementBracket) {
       lines.push(`Projected placement: **${placementBracket}**`);
     }
 
