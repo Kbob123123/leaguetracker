@@ -71,21 +71,38 @@ export async function execute(interaction) {
     snapshotAge = minutesAgo < 60 ? `${minutesAgo}m ago` : `${Math.round(minutesAgo / 60)}h ago`;
   }
 
-  // Compact stacked header, styled after a clean stat-card look rather than
-  // a scattered grid of small inline fields.
-  const headerLines = [
-    `⭐ **Points:** ${formatPoints(league.Points)} (${formatRate(leagueRate)})`,
-    `📈 **Global Rank:** ${neighbors.rank ? `#${neighbors.rank} of ${neighbors.total.toLocaleString()}` : 'N/A'}`,
-    `👥 **Members:** ${memberCount}/${league.MemberCapacity ?? 4}`,
-  ];
-  if (ownerName) headerLines.push(`👑 **Owner:** ${ownerName}`);
-  headerLines.push(`🕒 **Stats Snapshot:** ${snapshotAge}`);
+  // Prose, then a grid. The old header was a stacked column of
+  // emoji + bold label + value — the same pattern that made the player card
+  // read as a copy of another bot, so it is not reintroduced here.
+  const summary = [
+    // The points figure has its own field below; repeating it here would
+    // just be the same number twice in the reader's first two lines.
+    neighbors.rank
+      ? `Ranked **#${neighbors.rank}** of ${neighbors.total.toLocaleString()} leagues.`
+      : 'Not currently on the ranked leaderboard.',
+    ownerName ? `Run by **${ownerName}**.` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   const embed = new EmbedBuilder()
     .setTitle(league.Name)
-    .setColor(0x5865f2)
-    .setDescription(headerLines.join('\n'))
+    .setColor(0x2ee6c5)
+    .setDescription(summary)
     .setTimestamp();
+
+  embed.addFields(
+    { name: 'Points', value: `**${formatPoints(league.Points)}**`, inline: true },
+    { name: 'Rate', value: formatRate(leagueRate), inline: true },
+    {
+      name: 'Global rank',
+      value: neighbors.rank ? `**#${neighbors.rank}**\nof ${neighbors.total.toLocaleString()}` : '—',
+      inline: true,
+    },
+    { name: 'Members', value: `**${memberCount}**/${league.MemberCapacity ?? 4}`, inline: true },
+    { name: 'Level', value: league.Level != null ? `**${league.Level}**` : '—', inline: true },
+    { name: 'Stats from', value: snapshotAge, inline: true }
+  );
 
   // The old www.roblox.com/asset-thumbnail URL template 404s for every asset,
   // and fails inside an <img> tag, so Discord showed no thumbnail and nothing

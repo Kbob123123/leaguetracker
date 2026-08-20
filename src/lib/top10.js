@@ -1,4 +1,5 @@
 import { EmbedBuilder } from 'discord.js';
+import { resolveThumbnail } from './thumbnails.js';
 import { getLeaguesPage } from './ps99Api.js';
 import {
   getAllTop10Channels,
@@ -45,6 +46,11 @@ export async function buildTop10Embed() {
     embed.setDescription('Could not load the leaderboard right now — the PS99 API may be temporarily unavailable.');
     return embed;
   }
+
+  // The leader's icon as the board's thumbnail. One image, not ten: a rank
+  // list wants a single visual anchor, and the top league is the subject.
+  const leaderIcon = await resolveThumbnail(leagues[0]?.Icon).catch(() => null);
+  if (leaderIcon) embed.setThumbnail(leaderIcon);
 
   const now = Math.floor(Date.now() / 1000);
   const rows = leagues.map((league, i) => {
