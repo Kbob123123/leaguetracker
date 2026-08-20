@@ -92,16 +92,16 @@ export async function execute(interaction) {
     .setTimestamp();
 
   embed.addFields(
-    { name: 'Points', value: `**${formatPoints(league.Points)}**`, inline: true },
-    { name: 'Rate', value: formatRate(leagueRate), inline: true },
+    { name: '⭐ Points', value: `**${formatPoints(league.Points)}**`, inline: true },
+    { name: '📈 Rate', value: formatRate(leagueRate), inline: true },
     {
-      name: 'Global rank',
+      name: '🌍 Global rank',
       value: neighbors.rank ? `**#${neighbors.rank}**\nof ${neighbors.total.toLocaleString()}` : '—',
       inline: true,
     },
-    { name: 'Members', value: `**${memberCount}**/${league.MemberCapacity ?? 4}`, inline: true },
-    { name: 'Level', value: league.Level != null ? `**${league.Level}**` : '—', inline: true },
-    { name: 'Stats from', value: snapshotAge, inline: true }
+    { name: '👥 Members', value: `**${memberCount}**/${league.MemberCapacity ?? 4}`, inline: true },
+    { name: '🏅 Level', value: league.Level != null ? `**${league.Level}**` : '—', inline: true },
+    { name: '🕒 Stats from', value: snapshotAge, inline: true }
   );
 
   // The old www.roblox.com/asset-thumbnail URL template 404s for every asset,
@@ -150,7 +150,7 @@ export async function execute(interaction) {
     .join('\n');
 
   embed.addFields({
-    name: 'Contributions',
+    name: '🏅 Contributions',
     value: contributionLines || 'No contribution data available.',
     inline: false,
   });

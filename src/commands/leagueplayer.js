@@ -156,25 +156,25 @@ async function buildDetailedEmbed(match) {
   embed.setDescription(buildProvenance({ isRanking, match, pct, now }));
 
   embed.addFields(
-    { name: 'Points', value: `**${formatPoints(points)}**`, inline: true },
+    { name: '⭐ Points', value: `**${formatPoints(points)}**`, inline: true },
     {
-      name: 'In league',
+      name: '🛡️ In league',
       value: leaguePosition ? `**${leaguePosition}** of ${leagueSize ?? 4}` : '—',
       inline: true,
     },
     {
-      name: 'Global',
+      name: '🌍 Global',
       value: global ? `**#${global.globalRank.toLocaleString()}**\nof ${scanned.toLocaleString()}` : '—',
       inline: true,
     },
-    { name: 'Rate', value: formatRate(rate), inline: true },
+    { name: '📈 Rate', value: formatRate(rate), inline: true },
     {
-      name: 'Best battle',
+      name: '🔥 Best battle',
       value: best ? `**${formatPoints(best.points)}**\n${best.battle_key}` : '—',
       inline: true,
     },
     {
-      name: 'Battles',
+      name: '📜 Battles',
       value:
         battles.length > 0
           ? `**${battles.length}** on record`
@@ -204,7 +204,7 @@ async function buildDetailedEmbed(match) {
     }
   } else {
     embed.addFields({
-      name: 'Chart',
+      name: '📈 Chart',
       value:
         'Not enough history yet — a chart needs at least two readings from the hourly scan.',
     });

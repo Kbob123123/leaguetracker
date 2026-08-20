@@ -101,9 +101,9 @@ export async function execute(interaction) {
   // reader wants first had nowhere fixed to sit. Unknowns get their own field
   // rather than being folded into "private" — an outage is not an all-clear.
   embed.addFields(
-    { name: 'Public', value: `**${publicPlayers.length}**`, inline: true },
-    { name: 'Scanned', value: `**${checked}**`, inline: true },
-    { name: 'Unchecked', value: unknown > 0 ? `**${unknown}**` : '—', inline: true }
+    { name: '👁️ Public', value: `**${publicPlayers.length}**`, inline: true },
+    { name: '🔎 Scanned', value: `**${checked}**`, inline: true },
+    { name: '⚠️ Unchecked', value: unknown > 0 ? `**${unknown}**` : '—', inline: true }
   );
 
   if (publicPlayers.length === 0) {
