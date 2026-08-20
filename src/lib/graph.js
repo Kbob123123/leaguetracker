@@ -16,6 +16,7 @@ import {
   processTimeNote,
   houseScales,
   housePadding,
+  flatSafeBounds,
 } from './chartTheme.js';
 import { resolveThumbnail } from './thumbnails.js';
 
@@ -129,6 +130,9 @@ async function houseLineChart({
   xTickLimit = 8,
   startedAt = Date.now(),
 }) {
+  // Guard every chart against the collapsed-axis look a flat series causes.
+  const yBounds = flatSafeBounds(datasets.flatMap((d) => d.values ?? []));
+
   // A single series is named by the title, so a one-row legend box would be
   // pure noise. Two or more need naming.
   const showLegend = legend ?? datasets.length > 1;
@@ -166,7 +170,7 @@ async function houseLineChart({
       // Both are drawn by house plugins instead, so Chart.js's own must be off
       // or they would draw twice, in the wrong style and the wrong place.
       plugins: { legend: { display: false }, title: { display: false } },
-      scales: houseScales({ yFormat, xTickLimit }),
+      scales: houseScales({ yFormat, xTickLimit, yBounds }),
     },
     plugins: [
       backdropPlugin(),
