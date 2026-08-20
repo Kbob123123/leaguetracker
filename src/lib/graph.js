@@ -388,3 +388,70 @@ export async function renderMemberGraph(snapshots, leagueName, { leagueIcon } = 
     startedAt,
   });
 }
+
+/**
+ * Points per battle, as bars — the shape of someone's form over time.
+ *
+ * A bar chart rather than a line: battles are discrete events weeks apart,
+ * not a continuous series, and joining them with a line implies a trajectory
+ * between two points where nothing happened. This is the one view built
+ * entirely on our own battle archive, which the API does not keep.
+ *
+ * @param {object} p
+ * @param {string} p.title
+ * @param {string} [p.subtitle]
+ * @param {Array}  p.items    [{ label, value }] oldest first
+ * @param {string} [p.artUrl] resolved image URL to watermark behind the plot
+ * @param {string} [p.note]   right-hand footnote
+ */
+export async function renderBattleBars({ title, subtitle, items, artUrl, note }) {
+  if (!items || items.length < 2) return null;
+  const startedAt = Date.now();
+
+  const values = items.map((i) => Number(i.value) || 0);
+  const best = Math.max(...values);
+  const watermark = await loadWatermark(artUrl);
+
+  const yScale = houseScales({ yFormat: fullNumber, xTickLimit: 12 });
+
+  return render({
+    type: 'bar',
+    data: {
+      labels: items.map((i) => i.label),
+      datasets: [
+        {
+          data: values,
+          // The best battle wears the house cyan and the rest recede.
+          // Highlighting by colour rather than by an annotation keeps the
+          // chart readable at the size Discord renders it inline.
+          backgroundColor: values.map((v) =>
+            v === best ? SERIES_COLORS[0] : fillFor(SERIES_COLORS[0], 0.45)
+          ),
+          borderColor: HOUSE.SURFACE,
+          borderWidth: 2,
+          borderRadius: 4,
+          borderSkipped: 'start',
+        },
+      ],
+    },
+    options: {
+      responsive: false,
+      animation: false,
+      layout: { padding: housePadding({ hasSubtitle: Boolean(subtitle), hasFootnote: true }) },
+      plugins: { legend: { display: false }, title: { display: false } },
+      scales: {
+        x: yScale.x,
+        // Bars are read against zero — a truncated baseline exaggerates small
+        // differences into large-looking ones, which is exactly the lie a bar
+        // chart is prone to.
+        y: { ...yScale.y, beginAtZero: true },
+      },
+    },
+    plugins: [
+      backdropPlugin(),
+      watermarkPlugin(watermark),
+      titlePlugin({ title, subtitle }),
+      footnotePlugin({ left: processTimeNote(startedAt), right: note }),
+    ],
+  });
+}

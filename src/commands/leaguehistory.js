@@ -1,4 +1,6 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, AttachmentBuilder } from 'discord.js';
+import { renderBattleBars } from '../lib/graph.js';
+import { resolveAvatarUrl } from '../lib/robloxAvatars.js';
 import {
   getPlayerLeagueBattles,
   getLeagueBattlePercentile,
@@ -149,5 +151,27 @@ export async function execute(interaction) {
     text: 'Recorded by this bot at each Saturday reset — the PS99 API keeps no league battle archive.',
   });
 
-  await interaction.editReply({ embeds: [embed] });
+  // From the matched player, not from a history row: getPlayerLeagueBattles
+  // selects battle columns only and carries no user_id.
+  const files = [];
+  const headshot = await resolveAvatarUrl(player.user_id).catch(() => null);
+  if (headshot) embed.setThumbnail(headshot);
+
+  const chart = await renderBattleBars({
+    title: player.username ?? String(player.user_id),
+    subtitle: 'Points per league battle',
+    // Oldest first, so the chart reads left to right as time passing. The
+    // list above is ordered newest-first, which is right for a list and wrong
+    // for a timeline.
+    items: [...finished].reverse().map((b) => ({ label: battleLabel(b.battle_key), value: b.points })),
+    artUrl: headshot,
+    note: `${finished.length} battles`,
+  }).catch(() => null);
+
+  if (chart) {
+    files.push(new AttachmentBuilder(chart, { name: 'battles.png' }));
+    embed.setImage('attachment://battles.png');
+  }
+
+  await interaction.editReply({ embeds: [embed], files });
 }
