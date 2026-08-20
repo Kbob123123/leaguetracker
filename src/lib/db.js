@@ -44,6 +44,24 @@ CREATE TABLE IF NOT EXISTS player_rankings (
 CREATE INDEX IF NOT EXISTS idx_player_rankings_points
   ON player_rankings (points DESC);
 
+-- Avatar headshot URLs, for the artwork on player cards and behind charts.
+--
+-- Byte-for-byte the clan bot's table, because robloxAvatars.js is shared code
+-- and expects exactly this shape. image_url is NULLABLE and a NULL is
+-- meaningful: it records "Roblox has no rendered headshot for this user"
+-- (state Pending or Blocked). Caching that negative is the point — without it
+-- every card for a player without art re-asks a rate-limited endpoint and gets
+-- nothing, forever. Negatives are held far more briefly than hits, because
+-- Pending does resolve later.
+--
+-- The URLs themselves expire: Roblox returns 30DAY-prefixed CDN links, so the
+-- TTL in robloxAvatars.js MUST stay comfortably under 30 days.
+CREATE TABLE IF NOT EXISTS roblox_avatars (
+  user_id    TEXT PRIMARY KEY,
+  image_url  TEXT,
+  fetched_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS rankings_meta (
   key   TEXT PRIMARY KEY,
   value TEXT
@@ -459,6 +477,77 @@ export function getPlayerRanking(userId) {
 }
 
 /** Total number of players currently in the rankings table. */
+/**
+ * How this player's points compare with everyone in the scanned population.
+ *
+ * Ported from the clan bot so both cards phrase the same idea from the same
+ * maths. Returns null when nothing has been scanned yet.
+ */
+export function getPlayerPercentile(points) {
+  const { total } = db.prepare(`SELECT COUNT(*) as total FROM player_rankings`).get();
+  if (!total) return null;
+  const { below } = db.prepare(`SELECT COUNT(*) as below FROM player_rankings WHERE points < ?`).get(points);
+  return { fraction: below / total, below, total };
+}
+
+/**
+ * Cached avatar URLs for the given user IDs, as a Map of userId -> string|null.
+ *
+ * A key present with a null value means "known to have no art" — do NOT
+ * re-fetch it. A key that is absent means "not cached, go ask". Collapsing
+ * those two cases re-introduces the hammering this table exists to prevent.
+ */
+export function getCachedAvatarUrls(userIds, maxAgeSeconds, negativeMaxAgeSeconds) {
+  if (userIds.length === 0) return new Map();
+
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - maxAgeSeconds;
+  const negativeCutoff = now - negativeMaxAgeSeconds;
+  const found = new Map();
+
+  // Chunked because SQLite caps host parameters per statement at 999.
+  const CHUNK = 400;
+  for (let i = 0; i < userIds.length; i += CHUNK) {
+    const chunk = userIds.slice(i, i + CHUNK).map(String);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT user_id, image_url FROM roblox_avatars
+         WHERE user_id IN (${placeholders})
+           AND ((image_url IS NOT NULL AND fetched_at >= ?)
+             OR (image_url IS NULL AND fetched_at >= ?))`
+      )
+      .all(...chunk, cutoff, negativeCutoff);
+
+    for (const row of rows) found.set(row.user_id, row.image_url ?? null);
+  }
+
+  return found;
+}
+
+/** Upsert avatar URLs. entries: [[userId, urlOrNull], ...]. */
+export function putCachedAvatarUrls(entries) {
+  if (entries.length === 0) return;
+
+  const insert = db.prepare(`
+    INSERT INTO roblox_avatars (user_id, image_url, fetched_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+      image_url = excluded.image_url,
+      fetched_at = excluded.fetched_at
+  `);
+  const now = Math.floor(Date.now() / 1000);
+
+  db.exec('BEGIN');
+  try {
+    for (const [userId, url] of entries) insert.run(String(userId), url ?? null, now);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
 export function getPlayerRankingsCount() {
   const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings`).get();
   return count;

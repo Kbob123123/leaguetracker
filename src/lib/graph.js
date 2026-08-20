@@ -6,6 +6,7 @@ import {
   SERIES_COLORS,
   fillFor,
   fullNumber,
+  compact,
   loadWatermark,
   backdropPlugin,
   watermarkPlugin,
@@ -19,6 +20,7 @@ import {
   flatSafeBounds,
 } from './chartTheme.js';
 import { resolveThumbnail } from './thumbnails.js';
+import { resolveAvatarUrl } from './robloxAvatars.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FONT_DIR = path.join(__dirname, '..', '..', 'assets', 'fonts');
@@ -189,6 +191,106 @@ async function houseLineChart({
         : []),
       footnotePlugin({ left: processTimeNote(startedAt), right: footnote }),
     ],
+  });
+}
+
+/**
+ * Convert a cumulative points series into points-per-hour.
+ *
+ * Lives here rather than in the command because both the rate card and the
+ * total card's AVG/BEST tiles need it, and two copies would drift.
+ */
+export function toHourlyRates(series) {
+  const rates = [];
+  for (let i = 1; i < series.length; i++) {
+    const hours = (Number(series[i].ts) - Number(series[i - 1].ts)) / 3600;
+    if (hours <= 0) continue;
+    const delta = Number(series[i].points) - Number(series[i - 1].points);
+    // Points never decrease within a battle; a negative step means a reset or
+    // a bad reading, and charting it as negative earning would be a lie.
+    rates.push({ ts: Number(series[i].ts), rate: Math.max(0, delta / hours) });
+  }
+  return rates;
+}
+
+/**
+ * The /clansearch player card: TOTAL points over the window.
+ *
+ * Total is the primary view on purpose. The rate view is the more interesting
+ * one — a cumulative line only ever slopes up, while the derivative shows when
+ * someone was grinding and when they stopped — but the total is the number
+ * people come to look up, so it is what they get first. `renderPlayerRateCard`
+ * is the same card in rate form, behind a button.
+ *
+ * @param {object} p
+ * @param {string} p.playerName
+ * @param {string} p.subtitle     e.g. "Clan XBOX · NinjaBattle2026"
+ * @param {Array}  p.series       [{ ts, points }] oldest first
+ * @param {string|number} [p.userId]  avatar, watermarked behind the plot
+ * @param {string|null} [p.note]  right-hand footnote
+ * @param {boolean} [p.final]     battle is over; this is a finished result
+ */
+export async function renderPlayerTotalCard({ playerName, subtitle, series, userId, note, final = false }) {
+  if (!series || series.length < 2) return null;
+  const startedAt = Date.now();
+
+  const values = series.map((r) => Number(r.points) || 0);
+
+  // NO stat strip here any more. It carried TOTAL / AVG /H / BEST /H /
+  // LATEST /H — three RATE figures on a chart that plots a cumulative total,
+  // which was left over from when this chart was the rate view. Once a battle
+  // ends every one of them reads 0, so the card showed three zeroes in a row
+  // and looked broken while being perfectly correct. The totals live in the
+  // embed's own fields, which is where a reader looks for them anyway.
+  const watermark = userId ? await loadWatermark(await resolveAvatarUrl(userId)) : null;
+
+  return houseLineChart({
+    title: playerName,
+    subtitle,
+    labels: clockLabels(series),
+    datasets: [{ label: final ? 'Final Points' : 'Total Points', values, color: SERIES_COLORS[0], fill: true }],
+    watermark,
+    footnote: note,
+    // Forced on: the whole point of the restyle is that a chart names its
+    // series in a box, and "Total Points" vs "Points / Hour" is exactly the
+    // distinction a reader of this card needs.
+    legend: true,
+    startedAt,
+  });
+}
+
+/**
+ * The same player card in rate form: points per hour.
+ *
+ * Kept as a second chart rather than replacing the total — see
+ * `renderPlayerTotalCard`.
+ */
+export async function renderPlayerRateCard({ playerName, subtitle, rates, total, userId, note }) {
+  if (!rates || rates.length < 2) return null;
+  const startedAt = Date.now();
+
+  const values = rates.map((r) => Number(r.rate) || 0);
+  const avg = values.reduce((s, v) => s + v, 0) / values.length;
+  const best = Math.max(...values);
+  const latest = values[values.length - 1];
+
+  const watermark = userId ? await loadWatermark(await resolveAvatarUrl(userId)) : null;
+
+  return houseLineChart({
+    title: playerName,
+    subtitle,
+    labels: clockLabels(rates),
+    datasets: [{ label: 'Points / Hour', values, color: SERIES_COLORS[1], fill: true }],
+    watermark,
+    stats: [
+      { label: 'Total', value: compact(total) },
+      { label: 'Avg /h', value: compact(avg) },
+      { label: 'Best /h', value: compact(best) },
+      { label: 'Latest /h', value: compact(latest) },
+    ],
+    footnote: note,
+    legend: true,
+    startedAt,
   });
 }
 
