@@ -5,6 +5,8 @@ import {
   projectPointsAtBattleEnd,
   projectPlacementBracket,
   projectExactPlacement,
+  hoursToReachRank,
+  hoursUntilBattleEnd,
 } from './battleTimer.js';
 import { getPlayerRanking } from './db.js';
 import { formatName } from './robloxNames.js';
@@ -151,8 +153,58 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     embed.addFields({ name: '⬇️ Behind', value: '🔚 Last place — no one behind.', inline: true });
   }
 
-  // --- Milestones: distance to top 100 / 50 / 10, two-body when possible ---
-  if (milestones && Object.keys(milestones).length > 0) {
+  // --- Milestones: when you actually REACH each rank ---
+  //
+  // Computed by projecting every tracked league forward and finding when your
+  // rank crosses the threshold, not by racing one league's current points.
+  // See hoursToReachRank() for why the old approach was biased. Falls back to
+  // the old two-body line only when there is not enough league history yet.
+  const canProjectRanks = leagueRate != null && leagueRateInputs.length > 0;
+
+  if (canProjectRanks) {
+    const horizonHours = Math.max(1, hoursUntilBattleEnd(new Date(now * 1000)));
+    const results = MILESTONE_ORDER.map((rank) => ({
+      rank,
+      result: hoursToReachRank(
+        currentPoints,
+        leagueRate,
+        leagueRateInputs,
+        league.ID,
+        rank,
+        horizonHours
+      ),
+    }));
+
+    // Milestones already held are noise on every line — a rank-5 league does
+    // not need four "already there" rows. Only the ones still ahead get an
+    // ETA, and the tightest one already reached is kept as a single anchor so
+    // the field never comes back empty for a league at the very top.
+    const reached = results.filter((r) => r.result?.alreadyThere).map((r) => r.rank);
+    const pending = results.filter((r) => !r.result?.alreadyThere);
+
+    const milestoneLines = pending.map(({ rank, result }) => {
+      if (!result) return `**Top ${rank}** — not reachable at this pace before the reset`;
+      const etaUnix = Math.round(now + result.hours * 3600);
+      return `**Top ${rank}** — <t:${etaUnix}:R> (${formatDuration(result.hours)})`;
+    });
+
+    if (reached.length > 0) {
+      // MILESTONE_ORDER runs loosest-first, so the last reached entry is the
+      // tightest bracket currently held.
+      milestoneLines.unshift(`✅ **Top ${reached[reached.length - 1]}** — already there`);
+    }
+
+    if (milestoneLines.length > 0) {
+      embed.addFields({
+        name: '🎯 Milestones',
+        value: capToFieldLimit(milestoneLines),
+        inline: false,
+      });
+    }
+  } else if (milestones && Object.keys(milestones).length > 0) {
+    // Fallback: the original two-body estimate against the league currently at
+    // each rank. Biased (see hoursToReachRank), but better than nothing while
+    // the rankings job is still building up league_points_history.
     const milestoneLines = MILESTONE_ORDER.filter((rank) => milestones[rank]).map((rank) => {
       const target = milestones[rank];
       const line = buildTargetLine({
@@ -169,7 +221,7 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
     if (milestoneLines.length > 0) {
       embed.addFields({
         name: '🎯 Milestones',
-        value: milestoneLines.join('\n'),
+        value: capToFieldLimit(milestoneLines) + '\n_Estimated against current rank holders._',
         inline: false,
       });
     }

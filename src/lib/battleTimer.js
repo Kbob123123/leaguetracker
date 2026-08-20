@@ -148,6 +148,87 @@ export function projectExactPlacement(projectedPoints, leagueRateInputs, ownLeag
 }
 
 /**
+ * Hours until your projected rank reaches `targetRank`, or null.
+ *
+ * WHY THIS REPLACES THE OLD MILESTONE MATHS. The previous version computed
+ * `gap / (yourRate - targetRate)` against "the league currently sitting at
+ * rank N". That is correct arithmetic answering the wrong question: reaching
+ * that league's CURRENT points does not make you rank N, because every league
+ * between you and them is also moving. It also mixed a neighbourhood-AVERAGED
+ * rate with a SINGLE league's points, which is incoherent — the average was a
+ * patch over the bias rather than a fix for it.
+ *
+ * This instead asks the question directly. At a candidate time t, project
+ * every league we hold a rate for forward by t hours, count how many are above
+ * you, and that IS your rank at t. Binary-search the smallest t where that
+ * count puts you at or above the target.
+ *
+ * Consistency is the real prize: milestone ETAs and the "Projected finish:
+ * #143" line are now computed from the same data by the same method, so they
+ * can no longer contradict each other.
+ *
+ * Monotonicity caveat: rank-over-time is not strictly monotonic (a league
+ * behind you with a huge rate can pass you later), so a binary search can in
+ * principle land on a local crossing rather than the global first one. In
+ * practice rates are stable over a battle week and the search is bounded to
+ * the battle window, which is the horizon anyone cares about. Being off by a
+ * crossing inside that window is far smaller than the bias this replaces.
+ *
+ * @param {number} yourPoints
+ * @param {number} yourRate         points/hour
+ * @param {Array}  leagueRateInputs [{ leagueId, points, rate }]
+ * @param {string} ownLeagueId
+ * @param {number} targetRank
+ * @param {number} maxHours         search horizon; defaults to the battle end
+ * @returns {{hours: number, alreadyThere: boolean}|null}
+ */
+export function hoursToReachRank(
+  yourPoints,
+  yourRate,
+  leagueRateInputs,
+  ownLeagueId,
+  targetRank,
+  maxHours = null
+) {
+  if (yourPoints == null || yourRate == null) return null;
+  if (!Array.isArray(leagueRateInputs) || leagueRateInputs.length === 0) return null;
+
+  // Everyone except us. Filtering once outside the search keeps the inner loop
+  // to arithmetic — this runs ~40 times over ~28,000 leagues.
+  const others = leagueRateInputs.filter((l) => !ownLeagueId || l.leagueId !== ownLeagueId);
+  if (others.length === 0) return null;
+
+  const rankAt = (t) => {
+    const mine = yourPoints + yourRate * t;
+    let above = 0;
+    for (const l of others) {
+      if (l.points + (l.rate ?? 0) * t > mine) above += 1;
+    }
+    return above + 1;
+  };
+
+  if (rankAt(0) <= targetRank) return { hours: 0, alreadyThere: true };
+
+  // Default horizon is the rest of the battle: an ETA past the reset is
+  // meaningless because standings zero out then.
+  const horizon = maxHours ?? Math.max(1, hoursUntilBattleEnd());
+  if (rankAt(horizon) > targetRank) return null; // not reachable this battle
+
+  let lo = 0;
+  let hi = horizon;
+  // ~40 iterations takes the bracket well below a minute over any realistic
+  // horizon; a fixed count avoids an epsilon that behaves differently for a
+  // 2-hour window than a 160-hour one.
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (rankAt(mid) <= targetRank) hi = mid;
+    else lo = mid;
+  }
+
+  return { hours: hi, alreadyThere: false };
+}
+
+/**
  * Identifier for the battle currently being fought: the date of the reset it
  * will end at, as YYYY-MM-DD.
  *
