@@ -93,9 +93,18 @@ export async function execute(interaction) {
   }
 
   const embed = new EmbedBuilder()
-    .setTitle('🔎 Public profiles in the top leagues')
+    .setTitle('Public profiles in the top leagues')
     .setColor(publicPlayers.length > 0 ? 0xc98500 : 0x57f287)
     .setTimestamp();
+
+  // The three counts as fields. This was prose plus a list, so the numbers a
+  // reader wants first had nowhere fixed to sit. Unknowns get their own field
+  // rather than being folded into "private" — an outage is not an all-clear.
+  embed.addFields(
+    { name: 'Public', value: `**${publicPlayers.length}**`, inline: true },
+    { name: 'Scanned', value: `**${checked}**`, inline: true },
+    { name: 'Unchecked', value: unknown > 0 ? `**${unknown}**` : '—', inline: true }
+  );
 
   if (publicPlayers.length === 0) {
     embed.setDescription(
