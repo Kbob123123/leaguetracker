@@ -179,13 +179,19 @@ CREATE TABLE IF NOT EXISTS roblox_names (
 -- account is the honest model. guild_id and linked_by are kept for provenance
 -- — who claimed this link and where — not as part of the key.
 --
--- discord_user_id is UNIQUE as well: letting one Discord account claim several
--- Roblox accounts would make "who do I DM about this member" ambiguous in the
--- one direction that matters.
+-- One row per LINKED ROBLOX ACCOUNT, not per Discord user.
+--
+-- roblox_user_id stays the primary key, so a given Roblox account belongs to
+-- at most one Discord user. discord_user_id is deliberately NOT unique: people
+-- have alts, and the point of a link is knowing who to DM about an account,
+-- which does not stop being true when someone owns three of them.
+--
+-- It WAS unique originally. See migratePlayerLinksMultiAccount below, which
+-- rebuilds the table, because SQLite cannot drop a column constraint in place.
 CREATE TABLE IF NOT EXISTS player_links (
   roblox_user_id  TEXT PRIMARY KEY,
   roblox_username TEXT NOT NULL,
-  discord_user_id TEXT NOT NULL UNIQUE,
+  discord_user_id TEXT NOT NULL,
   guild_id        TEXT,
   linked_by       TEXT,
   linked_at       INTEGER NOT NULL
@@ -316,6 +322,53 @@ function addColumnIfMissing(table, column, definition) {
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   console.log(`[db] Migrated: added ${table}.${column}`);
 }
+
+/**
+ * Drop the old one-account-per-user constraint on player_links.
+ *
+ * The table originally declared discord_user_id UNIQUE, which capped every
+ * Discord user at a single Roblox account. SQLite cannot drop a column
+ * constraint with ALTER, so the table has to be rebuilt — and existing
+ * deployments run off a Railway volume, where the CREATE TABLE above is a
+ * no-op, so this is the only thing that will ever fix their schema.
+ *
+ * Detected by reading the stored CREATE statement rather than by probing
+ * indexes: the PRIMARY KEY also produces a unique auto-index, so index_list
+ * alone cannot tell the two apart.
+ */
+function migratePlayerLinksMultiAccount() {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='player_links'")
+    .get();
+  if (!row?.sql || !/discord_user_id[^,)]*UNIQUE/i.test(row.sql)) return;
+
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE player_links_new (
+        roblox_user_id  TEXT PRIMARY KEY,
+        roblox_username TEXT NOT NULL,
+        discord_user_id TEXT NOT NULL,
+        guild_id        TEXT,
+        linked_by       TEXT,
+        linked_at       INTEGER NOT NULL
+      );
+      INSERT INTO player_links_new
+        SELECT roblox_user_id, roblox_username, discord_user_id, guild_id, linked_by, linked_at
+        FROM player_links;
+      DROP TABLE player_links;
+      ALTER TABLE player_links_new RENAME TO player_links;
+      CREATE INDEX IF NOT EXISTS idx_player_links_discord ON player_links (discord_user_id);
+    `);
+    db.exec('COMMIT');
+    console.log('[db] Migrated: player_links now allows multiple Roblox accounts per Discord user.');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+migratePlayerLinksMultiAccount();
 
 addColumnIfMissing('player_rankings', 'username', 'TEXT');
 addColumnIfMissing('player_points_history', 'username', 'TEXT');
@@ -890,10 +943,10 @@ export function setTop10MessageId(channelId, messageId) {
 export function setPlayerLink({ robloxUserId, robloxUsername, discordUserId, guildId, linkedBy }) {
   db.exec('BEGIN');
   try {
-    db.prepare(`DELETE FROM player_links WHERE roblox_user_id = ? OR discord_user_id = ?`).run(
-      String(robloxUserId),
-      String(discordUserId)
-    );
+    // Displace only the ROBLOX side. Deleting by discord_user_id too — which
+    // is what this did while one-account-per-user was enforced — would silently
+    // unlink every other account the same person owns each time they added one.
+    db.prepare(`DELETE FROM player_links WHERE roblox_user_id = ?`).run(String(robloxUserId));
     db.prepare(`
       INSERT INTO player_links
         (roblox_user_id, roblox_username, discord_user_id, guild_id, linked_by, linked_at)
@@ -917,16 +970,47 @@ export function getLinkByRobloxId(robloxUserId) {
   return db.prepare(`SELECT * FROM player_links WHERE roblox_user_id = ?`).get(String(robloxUserId));
 }
 
-export function getLinkByDiscordId(discordUserId) {
-  return db.prepare(`SELECT * FROM player_links WHERE discord_user_id = ?`).get(String(discordUserId));
+/**
+ * Every Roblox account linked to a Discord user, oldest link first.
+ *
+ * Returns an array because one person can hold several. Ordered by linked_at
+ * so "your first account" stays first in every listing rather than shuffling
+ * whenever SQLite feels like it.
+ */
+export function getLinksByDiscordId(discordUserId) {
+  return db
+    .prepare(`SELECT * FROM player_links WHERE discord_user_id = ? ORDER BY linked_at ASC`)
+    .all(String(discordUserId));
 }
 
-/** Remove a link by either side. Returns true if a row was actually deleted. */
-export function removePlayerLink({ robloxUserId, discordUserId }) {
-  const result = db
-    .prepare(`DELETE FROM player_links WHERE roblox_user_id = ? OR discord_user_id = ?`)
-    .run(robloxUserId ? String(robloxUserId) : null, discordUserId ? String(discordUserId) : null);
-  return result.changes > 0;
+/** How many accounts one Discord user has linked. */
+export function countLinksByDiscordId(discordUserId) {
+  return db
+    .prepare(`SELECT COUNT(*) AS n FROM player_links WHERE discord_user_id = ?`)
+    .get(String(discordUserId)).n;
+}
+
+/** Remove every link belonging to one Discord user. Returns how many went. */
+export function removeAllPlayerLinks(discordUserId) {
+  return db
+    .prepare(`DELETE FROM player_links WHERE discord_user_id = ?`)
+    .run(String(discordUserId)).changes;
+}
+
+/**
+/**
+ * Remove ONE link, identified by its Roblox account.
+ *
+ * Deliberately no longer accepts a Discord id. It used to delete by either
+ * side, which was harmless when a person could only hold one account and is a
+ * footgun now — passing a Discord id would wipe every account they own.
+ * That is what removeAllPlayerLinks is for, and it says so in its name.
+ */
+export function removePlayerLink({ robloxUserId }) {
+  if (!robloxUserId) return false;
+  return (
+    db.prepare(`DELETE FROM player_links WHERE roblox_user_id = ?`).run(String(robloxUserId)).changes > 0
+  );
 }
 
 /** Links for a set of Roblox IDs, as a Map of robloxUserId -> row. */

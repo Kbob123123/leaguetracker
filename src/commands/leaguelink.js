@@ -1,6 +1,23 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { resolveUsernameToId } from '../lib/robloxNames.js';
-import { setPlayerLink, getLinkByDiscordId, getLinkByRobloxId, removePlayerLink } from '../lib/db.js';
+import {
+  setPlayerLink,
+  getLinksByDiscordId,
+  countLinksByDiscordId,
+  getLinkByRobloxId,
+  removePlayerLink,
+  removeAllPlayerLinks,
+} from '../lib/db.js';
+
+/**
+ * How many Roblox accounts one Discord user may link.
+ *
+ * A cap exists because nothing stops someone claiming hundreds of accounts
+ * they do not own — linking verifies that an account EXISTS, never that it
+ * belongs to the caller. Ten covers a real player with alts comfortably
+ * while keeping that abuse bounded.
+ */
+const MAX_LINKS_PER_USER = 10;
 
 // Links a Roblox account to a Discord account so the bot has somebody to DM
 // when a monitored league member stops scoring. League contributions identify
@@ -8,12 +25,12 @@ import { setPlayerLink, getLinkByDiscordId, getLinkByRobloxId, removePlayerLink 
 // user to reach.
 export const data = new SlashCommandBuilder()
   .setName('leaguelink')
-  .setDescription('Link your Roblox account so the bot can DM you if you stop scoring.')
+  .setDescription('Link your Roblox accounts so the bot can DM you if you stop scoring.')
   .addStringOption((opt) =>
-    opt.setName('roblox').setDescription('Your exact Roblox username. Omit to see your current link.')
+    opt.setName('roblox').setDescription('Your exact Roblox username. Omit to list your linked accounts.')
   )
   .addBooleanOption((opt) =>
-    opt.setName('unlink').setDescription('Remove your link instead of creating one')
+    opt.setName('unlink').setDescription('Remove a link. With roblox: removes that one, alone removes all.')
   );
 
 export async function execute(interaction) {
@@ -26,22 +43,50 @@ export async function execute(interaction) {
   const discordUserId = interaction.user.id;
 
   if (unlink) {
-    const removed = removePlayerLink({ discordUserId });
+    // With a username: remove just that account. Without one: remove them all.
+    // The distinction matters now that people hold several — "unlink" used to
+    // be unambiguous and no longer is.
+    if (robloxName) {
+      const mine = getLinksByDiscordId(discordUserId);
+      const match = mine.find(
+        (l) => l.roblox_username.toLowerCase() === robloxName.toLowerCase()
+      );
+
+      if (!match) {
+        await interaction.editReply(
+          `❌ **${robloxName}** is not one of your linked accounts.\n` +
+            (mine.length > 0
+              ? `_You have: ${mine.map((l) => l.roblox_username).join(', ')}_`
+              : '_You have no linked accounts._')
+        );
+        return;
+      }
+
+      removePlayerLink({ robloxUserId: match.roblox_user_id });
+      await interaction.editReply(
+        `✅ Unlinked **${match.roblox_username}**. ` +
+          `You still have **${countLinksByDiscordId(discordUserId)}** account(s) linked.`
+      );
+      return;
+    }
+
+    const removed = removeAllPlayerLinks(discordUserId);
     await interaction.editReply(
-      removed
-        ? '✅ Unlinked. You will no longer get idle DMs about a league.'
-        : "You don't have a linked Roblox account, so there was nothing to remove."
+      removed > 0
+        ? `✅ Unlinked **${removed}** account(s). You will no longer get idle DMs about a league.`
+        : "You don't have any linked Roblox accounts, so there was nothing to remove."
     );
     return;
   }
 
   // No username given — report the current state rather than guessing.
   if (!robloxName) {
-    const existing = getLinkByDiscordId(discordUserId);
-    if (!existing) {
+    const mine = getLinksByDiscordId(discordUserId);
+    if (mine.length === 0) {
       await interaction.editReply(
-        'You have no linked Roblox account.\n' +
-          'Link one with `/leaguelink roblox:<your username>` — it has to be your exact username, not your display name.'
+        'You have no linked Roblox accounts.\n' +
+          'Link one with `/leaguelink roblox:<your username>` — it has to be your exact username, not your display name.\n' +
+          `_You can link up to **${MAX_LINKS_PER_USER}** accounts._`
       );
       return;
     }
@@ -49,13 +94,20 @@ export async function execute(interaction) {
     await interaction.editReply({
       embeds: [
         new EmbedBuilder()
-          .setTitle('🔗 Your linked account')
-          .setColor(0x3987e5)
+          .setTitle(`🔗 Your linked accounts (${mine.length}/${MAX_LINKS_PER_USER})`)
+          .setColor(0x2ee6c5)
           .setDescription(
-            `**Roblox:** ${existing.roblox_username} (\`${existing.roblox_user_id}\`)\n` +
-              `**Linked:** <t:${existing.linked_at}:R>`
+            mine
+              .map(
+                (l, i) =>
+                  `\`${i + 1}.\` **${l.roblox_username}** — \`${l.roblox_user_id}\`\n` +
+                  `└ linked <t:${l.linked_at}:R>`
+              )
+              .join('\n')
           )
-          .setFooter({ text: 'Change it by running /leaguelink again, or remove it with unlink:true.' }),
+          .setFooter({
+            text: 'Add another with roblox:<username>. Remove one with roblox:<username> unlink:true, or all with unlink:true alone.',
+          }),
       ],
     });
     return;
@@ -94,6 +146,18 @@ export async function execute(interaction) {
     return;
   }
 
+  // Re-linking an account you already hold is a no-op, not a new slot — so
+  // the cap is only checked when this would actually add one. Without that,
+  // running the command twice on the same alt would eventually lock you out.
+  const alreadyMine = takenBySomeoneElse?.discord_user_id === discordUserId;
+  if (!alreadyMine && countLinksByDiscordId(discordUserId) >= MAX_LINKS_PER_USER) {
+    await interaction.editReply(
+      `❌ You already have **${MAX_LINKS_PER_USER}** accounts linked, which is the limit.\n` +
+        'Remove one first with `/leaguelink roblox:<username> unlink:true`.'
+    );
+    return;
+  }
+
   setPlayerLink({
     robloxUserId: account.userId,
     robloxUsername: account.username,
@@ -102,11 +166,15 @@ export async function execute(interaction) {
     linkedBy: discordUserId,
   });
 
+  const total = countLinksByDiscordId(discordUserId);
+
   await interaction.editReply(
-    `✅ Linked to **${account.username}**` +
+    `✅ Linked **${account.username}**` +
       (account.displayName && account.displayName !== account.username ? ` (${account.displayName})` : '') +
-      `.\n\nIf you're in a league this server monitors and you stop scoring, I'll DM you. ` +
-      'Make sure your DMs are open to server members, or the reminder can\'t reach you. ' +
-      'Turn it off any time with `/leaguelink unlink:true`.'
+      `.\n\nYou now have **${total}** account(s) linked` +
+      (total < MAX_LINKS_PER_USER ? ` — you can add ${MAX_LINKS_PER_USER - total} more.` : ' (the limit).') +
+      "\n\nIf any of them is in a league this server monitors and stops scoring, I'll DM you. " +
+      "Make sure your DMs are open to server members, or the reminder can't reach you. " +
+      'Remove one with `roblox:<username> unlink:true`, or all with `unlink:true`.'
   );
 }

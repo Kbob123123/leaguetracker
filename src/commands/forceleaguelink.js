@@ -4,6 +4,9 @@ import {
   setPlayerLink,
   getLinkByRobloxId,
   removePlayerLink,
+  removeAllPlayerLinks,
+  getLinksByDiscordId,
+  countLinksByDiscordId,
   getAllPlayerLinks,
 } from '../lib/db.js';
 import { capToFieldLimit, DESCRIPTION_LIMIT } from '../lib/embed.js';
@@ -21,7 +24,7 @@ export const data = new SlashCommandBuilder()
     opt.setName('roblox').setDescription('Their exact Roblox username')
   )
   .addBooleanOption((opt) =>
-    opt.setName('unlink').setDescription("Remove that member's link instead of creating one")
+    opt.setName('unlink').setDescription("Remove a link. With roblox: removes that one, alone removes all.")
   );
 
 export async function execute(interaction) {
@@ -58,16 +61,49 @@ export async function execute(interaction) {
   }
 
   if (unlink) {
-    const removed = removePlayerLink({ discordUserId: target.id });
+    // Same rule as the self-service path: naming an account removes that one,
+    // omitting it removes all of them. An admin wiping every alt by accident
+    // is a worse outcome than one extra option.
+    if (robloxName) {
+      const theirs = getLinksByDiscordId(target.id);
+      const match = theirs.find((l) => l.roblox_username.toLowerCase() === robloxName.toLowerCase());
+
+      if (!match) {
+        await interaction.editReply(
+          `❌ **${robloxName}** is not linked to <@${target.id}>.\n` +
+            (theirs.length > 0
+              ? `_They have: ${theirs.map((l) => l.roblox_username).join(', ')}_`
+              : '_They have no linked accounts._')
+        );
+        return;
+      }
+
+      removePlayerLink({ robloxUserId: match.roblox_user_id });
+      await interaction.editReply(
+        `✅ Unlinked **${match.roblox_username}** from <@${target.id}>. ` +
+          `They have **${countLinksByDiscordId(target.id)}** left.`
+      );
+      return;
+    }
+
+    const removed = removeAllPlayerLinks(target.id);
     await interaction.editReply(
-      removed ? `✅ Unlinked <@${target.id}>.` : `<@${target.id}> had no linked Roblox account.`
+      removed > 0
+        ? `✅ Unlinked all **${removed}** account(s) from <@${target.id}>.`
+        : `<@${target.id}> had no linked Roblox accounts.`
     );
     return;
   }
 
   if (!robloxName) {
+    // With no username and no unlink flag, show what they already have —
+    // more useful than an error, and it is the question an admin usually has.
+    const theirs = getLinksByDiscordId(target.id);
     await interaction.editReply(
-      '❌ Give a `roblox:` username to link, or pass `unlink:true` to remove their link.'
+      theirs.length === 0
+        ? `<@${target.id}> has no linked accounts.\n_Add one with \`roblox:<username>\`._`
+        : `<@${target.id}> has **${theirs.length}** linked:\n` +
+            theirs.map((l) => `• **${l.roblox_username}** — \`${l.roblox_user_id}\``).join('\n')
     );
     return;
   }
