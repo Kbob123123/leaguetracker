@@ -14,6 +14,7 @@ import {
   getLeagueIdsNearRank,
   recordDailyPointsBatch,
   getAllLeagueRateInputs,
+  isMonitoringPaused,
 } from './db.js';
 import { buildLeagueEmbed } from './embed.js';
 import { resolveThumbnail } from './thumbnails.js';
@@ -90,6 +91,11 @@ function withNeighborhoodRate(leagueObj, rank) {
 }
 
 export async function pollAllTrackedChannels(client) {
+  // The owner's global pause. Checked here rather than per channel so a pause
+  // costs one lookup a poll and stops everything downstream — embed updates,
+  // alerts and idle DMs alike.
+  if (isMonitoringPaused()) return;
+
   const tracked = getAllTrackedChannels();
 
   for (const row of tracked) {

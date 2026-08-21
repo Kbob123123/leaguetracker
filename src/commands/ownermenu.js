@@ -20,6 +20,10 @@ import {
   getCommandLogSummary,
   isCommandLoggingEnabled,
   setCommandLoggingEnabled,
+  isMonitoringPaused,
+  setMonitoringPaused,
+  stopAllTracking,
+  getTrackingCounts,
 } from '../lib/db.js';
 import { isOwner, OWNER_ID } from '../lib/owner.js';
 import { getLogChannelId, setLogChannelId, clearLogChannel, postLeaveNotice, createGuildInvite } from '../lib/commandLog.js';
@@ -95,6 +99,25 @@ export async function handleComponent(interaction) {
   if (action === 'whitelist') return interaction.editReply(buildWhitelistView(interaction.client));
   if (action === 'logs') return interaction.editReply(buildLogsView(interaction.client, false));
   if (action === 'logs_summary') return interaction.editReply(buildLogsView(interaction.client, true));
+
+  if (action === 'tracking') return interaction.editReply(buildTrackingView());
+  if (action === 'stopall_ask') return interaction.editReply(buildStopAllConfirmView());
+
+  if (action === 'toggle_pause') {
+    setMonitoringPaused(!isMonitoringPaused());
+    return interaction.editReply(buildTrackingView());
+  }
+
+  if (action === 'stopall_do') {
+    const removed = stopAllTracking();
+    console.warn(
+      `[owner] Stopped ALL tracking: ${removed.leagues} league(s).`
+    );
+    const view = buildTrackingView();
+    view.content =
+      `🛑 Stopped everything — removed **${removed.leagues}** tracked league(s).`;
+    return interaction.editReply(view);
+  }
 
   if (action === 'toggle_logging') {
     setCommandLoggingEnabled(!isCommandLoggingEnabled());
@@ -197,6 +220,7 @@ function buildHomeView(client) {
         `🖥️ **Servers:** ${guilds.size}` + (blocked > 0 ? ` · ⛔ ${blocked} not approved` : ''),
         `✅ **Approved:** ${whitelisted}` +
           (whitelisted === 0 ? ' — _nothing is approved, so the bot answers no one but you_' : ''),
+        `📡 **Monitoring:** ${isMonitoringPaused() ? '⏸️ PAUSED — nothing is polling or DMing' : '🟢 running'}`,
         `📜 **Command logging:** ${logging ? '🟢 running' : '🔴 stopped'}`,
         `📨 **Log channel:** ${logChannelId ? `<#${logChannelId}>` : '_not set — nothing is being posted_'}`,
         `📊 **Commands recorded:** ${totalLogged.toLocaleString()}`,
@@ -209,7 +233,8 @@ function buildHomeView(client) {
     new ActionRowBuilder().addComponents(
       button('servers', 'Servers', ButtonStyle.Primary, '🖥️'),
       button('whitelist', 'Approved', ButtonStyle.Primary, '✅'),
-      button('logs', 'Logs', ButtonStyle.Primary, '📜')
+      button('logs', 'Logs', ButtonStyle.Primary, '📜'),
+      button('tracking', 'Tracking', ButtonStyle.Primary, '📡')
     ),
     new ActionRowBuilder().addComponents(
       button(
@@ -550,6 +575,85 @@ function buildWhitelistView(client) {
     button('whitelist_add', 'Add server', ButtonStyle.Success, '➕'),
     button('whitelist_remove', 'Remove server', ButtonStyle.Danger, '➖'),
     button('home', 'Back', ButtonStyle.Secondary, '◀️')
+  );
+
+  return { content: '', embeds: [embed], components: [controls] };
+}
+
+/**
+ * Tracking controls: the pause switch, and the nuclear option.
+ *
+ * Two deliberately different tools. PAUSE stops every poll instantly across
+ * every server and is reversible with one more click — it destroys nothing, so
+ * it is the right answer to "the DMs are annoying right now". STOP ALL deletes
+ * the tracking itself, which is what you want when a battle has ended and you
+ * do not intend to resume, and it cannot be undone.
+ *
+ * Offering only the destructive one would mean re-setting-up every server to
+ * get five minutes of quiet.
+ */
+function buildTrackingView() {
+  const paused = isMonitoringPaused();
+  const counts = getTrackingCounts();
+
+  const embed = new EmbedBuilder()
+    .setTitle('📡 Tracking')
+    .setColor(paused ? 0xe67e22 : 0x2ee6c5)
+    .setDescription(
+      [
+        paused
+          ? '⏸️ **Monitoring is PAUSED.** No polls, no embed updates, no alerts, no DMs — ' +
+            'in any server. Nothing has been deleted; press resume and it all picks up again.'
+          : '🟢 **Monitoring is running.**',
+        '',
+        `🏆 **Tracked leagues:** ${counts.leagues}`,
+        `🔗 **Linked accounts:** ${counts.links}`,
+      ].join('\n')
+    )
+    .setFooter({
+      text: 'Pause is instant and reversible. Stop all deletes the tracking and cannot be undone.',
+    })
+    .setTimestamp();
+
+  const controls = new ActionRowBuilder().addComponents(
+    button(
+      'toggle_pause',
+      paused ? 'Resume monitoring' : 'Pause everything',
+      paused ? ButtonStyle.Success : ButtonStyle.Danger,
+      paused ? '▶️' : '⏸️'
+    ),
+    button('stopall_ask', 'Stop ALL tracking', ButtonStyle.Danger, '🛑'),
+    button('home', 'Back', ButtonStyle.Secondary, '◀️')
+  );
+
+  return { content: '', embeds: [embed], components: [controls] };
+}
+
+/** Confirmation step for the destructive one. */
+function buildStopAllConfirmView() {
+  const counts = getTrackingCounts();
+
+  const embed = new EmbedBuilder()
+    .setTitle('🛑 Stop ALL tracking?')
+    .setColor(0xed4245)
+    .setDescription(
+      [
+        `This removes **${counts.leagues}** tracked league(s), in every server, and clears the ` +
+          'idle baselines with them.',
+        '',
+        '**This cannot be undone.** Every server would have to set their tracking up again.',
+        '',
+        `🔗 Linked accounts are **kept** (${counts.links}) — they are not tracking, and losing them ` +
+          'would make people re-link for nothing.',
+        '',
+        '_Want quiet rather than a clean slate? Go back and press **Pause everything** instead._',
+      ].join('\n')
+    )
+    .setTimestamp();
+
+  const controls = new ActionRowBuilder().addComponents(
+    button('stopall_do', 'Yes, stop everything', ButtonStyle.Danger, '🛑'),
+    button('tracking', 'Cancel', ButtonStyle.Secondary, '◀️')
   );
 
   return { content: '', embeds: [embed], components: [controls] };

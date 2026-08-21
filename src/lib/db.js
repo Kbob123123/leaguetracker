@@ -1156,6 +1156,67 @@ export function getCommandLogSummary(limit = 20) {
  * Owner settings
  * ------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Owner kill switch
+ * ------------------------------------------------------------------------- */
+
+const PAUSE_KEY = 'monitoring_paused';
+
+/**
+ * Global pause. When on, the poller does nothing at all — no embed updates,
+ * no alerts, no idle DMs, in any server.
+ *
+ * The owner's "stop, now" switch: one flag, every server, instantly
+ * reversible, and it destroys no configuration. Stored rather than held in
+ * memory so it survives the restart every deploy causes — a pause that quietly
+ * lifted itself on the next deploy would be worse than no pause at all.
+ *
+ * Mirrors the clan bot's copy; the two are separate databases and each bot
+ * pauses independently.
+ */
+export function isMonitoringPaused() {
+  return getMeta(PAUSE_KEY) === '1';
+}
+
+export function setMonitoringPaused(paused) {
+  setMeta(PAUSE_KEY, paused ? '1' : '0');
+}
+
+/**
+ * Remove every tracked league, everywhere.
+ *
+ * The destructive counterpart to the pause above. Idle baselines go with the
+ * tracking — leaving member_idle_state behind would mean a later re-track
+ * diffs against stale values and nudges people about a stall that ended weeks
+ * ago. Links are deliberately kept: they are not tracking, and dropping them
+ * would make everyone re-link for nothing.
+ */
+export function stopAllTracking() {
+  const counts = {
+    leagues: db.prepare(`SELECT COUNT(*) AS n FROM tracked_channels`).get().n,
+  };
+
+  db.exec('BEGIN');
+  try {
+    db.exec('DELETE FROM tracked_channels');
+    db.exec('DELETE FROM member_idle_state');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+
+  return counts;
+}
+
+/** How much is being tracked right now, for the owner console. */
+export function getTrackingCounts() {
+  return {
+    leagues: db.prepare(`SELECT COUNT(*) AS n FROM tracked_channels`).get().n,
+    links: db.prepare(`SELECT COUNT(*) AS n FROM player_links`).get().n,
+  };
+}
+
 export function getMeta(key) {
   return db.prepare(`SELECT value FROM bot_meta WHERE key = ?`).get(key)?.value ?? null;
 }
