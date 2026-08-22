@@ -1,6 +1,6 @@
 {
   "name": "ps99-league-bot",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Discord bot that monitors Pet Simulator 99 leagues and posts live rate/overtake updates.",
   "type": "module",
   "main": "src/index.js",

@@ -19,6 +19,13 @@
 
 export const CHANGELOG = [
   {
+    version: '1.2.0',
+    date: '2026-08-22',
+    lines: [
+      'The bot now shows what it is watching in the member list, so you can tell at a glance that it is running.',
+    ],
+  },
+  {
     version: '1.1.0',
     date: '2026-08-22',
     lines: [
