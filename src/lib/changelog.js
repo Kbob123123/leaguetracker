@@ -19,6 +19,14 @@
 
 export const CHANGELOG = [
   {
+    version: '1.2.3',
+    date: '2026-08-23',
+    lines: [
+      '**Fixed several players all showing as #1.** Ranks are worked out purely from the hourly scan of the top 1,000 leagues, comparing everyone against the same snapshot, so only one player can hold first place.',
+      'The trade-off is stated plainly on the card: a rank can be up to an hour old. That is better than a number that updates faster and contradicts itself.',
+    ],
+  },
+  {
     version: '1.2.2',
     date: '2026-08-23',
     lines: [

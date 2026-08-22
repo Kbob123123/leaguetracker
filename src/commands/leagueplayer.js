@@ -6,7 +6,7 @@ import {
   getPlayerRankingByName,
   getPlayerPointsNear,
   getPlayerPointsHistory,
-  rankForPoints,
+  getPlayerRanking,
   getPlayerRankingsCount,
   getPlayerPercentile,
   getPlayerLeagueBattles,
@@ -116,10 +116,10 @@ async function buildDetailedEmbed(match) {
     if (hourAgo) rate = hourlyRate(hourAgo.points, hourAgo.ts, points, now);
   }
 
-  // Ranked on the LIVE point total, not the row the hourly rebuild stored —
-  // otherwise a player who scored since it ran is ranked on a stale number,
-  // and just after the Saturday reset that stale number is zero.
-  const global = rankForPoints(points);
+  // Ranked from the top-1,000 league scan, comparing that scan's stored total
+  // against that same scan's population. Ranking live points against stored
+  // ones looks fresher and is wrong: it gave several players "#1" at once.
+  const global = getPlayerRanking(userId);
   const scanned = getPlayerRankingsCount();
   const pct = getPlayerPercentile(points);
 

@@ -564,10 +564,11 @@ export function getPlayerRanking(userId) {
 /**
  * Where a point total sits in the scanned population.
  *
- * Separated from the stored row so callers can rank a player's LIVE points
- * rather than whatever the last hourly pass stored — the rebuild runs hourly,
- * so a player who has scored since it ran would otherwise be ranked on a
- * stale total, and just after the Saturday reset that stale total is zero.
+ * BOTH SIDES MUST COME FROM THE SAME SCAN. An earlier version ranked a
+ * player's LIVE points against the STORED population to dodge staleness, and
+ * that produced several simultaneous "#1"s: every player who had out-scored
+ * the stored maximum counted zero players above them and each came out first.
+ * A rank is only meaningful inside one consistent snapshot.
  *
  * Zero is not a rank: nobody is above a zero, so counting "players strictly
  * above me" makes every zero joint first. Returns null instead.
