@@ -18,6 +18,7 @@ import { updateAllTop10Channels } from './lib/top10.js';
 import { checkAccess, describeInvocation } from './lib/owner.js';
 import { logCommand, isGuildWhitelisted } from './lib/db.js';
 import { postCommandLog, postLeaveNotice, postGuildJoinLog } from './lib/commandLog.js';
+import { announceUpdates } from './lib/botUpdates.js';
 import {
   COMPONENT_PREFIX as OWNERMENU_PREFIX,
   handleComponent as handleOwnerMenuComponent,
@@ -225,6 +226,16 @@ client.once(Events.ClientReady, async () => {
   console.log('[whitelist] ' + client.guilds.cache.size + ' approved server(s) remain' + (left > 0 ? '; left ' + left + ' unapproved.' : '.'));
 
   console.log(`Logged in as ${client.user.tag}.`);
+
+  // Announce any release that shipped since the last one we announced. Wrapped
+  // because the changelog must never be the reason the bot fails to start —
+  // same rule as logging, DMs and history everywhere else in this codebase.
+  try {
+    await announceUpdates(client);
+  } catch (err) {
+    console.error('[updates] Announcement pass failed:', err);
+  }
+
   console.log(`Polling every ${POLL_INTERVAL_MS / 60000} minute(s).`);
   setInterval(runPollTick, POLL_INTERVAL_MS);
   // Run one tick shortly after startup too, so restarts don't wait a full interval.

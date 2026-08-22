@@ -15,6 +15,7 @@ const CATEGORIES = [
   { name: '📈 History', commands: ['leaguehistory'] },
   { name: '👁️ Live monitoring', commands: ['leaguemonitor'] },
   { name: '🔗 Account links', commands: ['leaguelink', 'forceleaguelink'] },
+  { name: '🔧 Setup', commands: ['botupdchannel'] },
   { name: 'ℹ️ Meta', commands: ['help'] },
   { name: '🔐 Owner only', commands: ['ownermenu'] },
 ];

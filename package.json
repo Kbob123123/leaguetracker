@@ -1,6 +1,6 @@
 {
   "name": "ps99-league-bot",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Discord bot that monitors Pet Simulator 99 leagues and posts live rate/overtake updates.",
   "type": "module",
   "main": "src/index.js",
@@ -8,7 +8,8 @@
     "start": "node src/index.js",
     "lint-commands": "node src/lint-commands.mjs src/commands",
     "predeploy-commands": "npm run lint-commands",
-    "deploy-commands": "node src/deploy-commands.js"
+    "deploy-commands": "node src/deploy-commands.js",
+    "clear-guild-commands": "node src/clear-guild-commands.js"
   },
   "dependencies": {
     "chart.js": "^4.4.8",

@@ -266,6 +266,23 @@ CREATE TABLE IF NOT EXISTS bot_meta (
   value TEXT
 );
 
+-- Channels that receive the bot's own release announcements.
+--
+-- Its own table rather than a tracked_channels flag, because it is not tied to
+-- a league at all: it is a broadcast list, read as a flat set at startup with
+-- no tracking state involved. Keying on channel_id lets one server register
+-- more than one, and makes unregistering exact.
+--
+-- WHICH VERSIONS HAVE BEEN ANNOUNCED IS NOT STORED HERE. That marker lives
+-- once in bot_meta, globally. Putting it on the row would mean a channel
+-- registered tomorrow replays every past release the first time it is seen.
+CREATE TABLE IF NOT EXISTS bot_update_channels (
+  channel_id TEXT PRIMARY KEY,
+  guild_id   TEXT NOT NULL,
+  added_by   TEXT,
+  added_at   INTEGER NOT NULL
+);
+
 -- League battle history, captured by us because the API keeps none.
 --
 -- Unlike clans — whose detail response ships a rolling archive of ~30 past
@@ -1299,6 +1316,33 @@ export function getTrackingCounts() {
     leagues: db.prepare(`SELECT COUNT(*) AS n FROM tracked_channels`).get().n,
     links: db.prepare(`SELECT COUNT(*) AS n FROM player_links`).get().n,
   };
+}
+
+/* ---------------------------------------------------------------------------
+ * Bot update announcement channels
+ * ------------------------------------------------------------------------- */
+
+export function addBotUpdateChannel({ channelId, guildId, addedBy }) {
+  db.prepare(`
+    INSERT INTO bot_update_channels (channel_id, guild_id, added_by, added_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(channel_id) DO UPDATE SET guild_id = excluded.guild_id, added_by = excluded.added_by
+  `).run(String(channelId), String(guildId), addedBy ? String(addedBy) : null, Math.floor(Date.now() / 1000));
+}
+
+/** Returns true if a row was actually removed. */
+export function removeBotUpdateChannel(channelId) {
+  return db.prepare(`DELETE FROM bot_update_channels WHERE channel_id = ?`).run(String(channelId)).changes > 0;
+}
+
+/** Every registered channel, across all servers. */
+export function getBotUpdateChannels() {
+  return db.prepare(`SELECT * FROM bot_update_channels ORDER BY added_at ASC`).all();
+}
+
+/** What this server has registered, if anything. */
+export function getBotUpdateChannelsForGuild(guildId) {
+  return db.prepare(`SELECT * FROM bot_update_channels WHERE guild_id = ?`).all(String(guildId));
 }
 
 export function getMeta(key) {
