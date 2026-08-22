@@ -538,12 +538,37 @@ export function replacePlayerRankings(rows) {
 }
 
 /** Look up a player's global rank (within the tracked top-N leagues) by Roblox user ID. */
+/**
+ * A player's global standing, or an explicit "not ranked".
+ *
+ * ZERO POINTS IS NOT A RANK. The maths is ordinary competition ranking —
+ * count how many players are strictly above you, add one — which is correct
+ * for distinct scores and badly wrong at zero: nobody is above a zero, so
+ * every zero comes out joint first, and a table full of zeroes reports every
+ * player as "#1 of 50,000". League contributions zero at the Saturday reset,
+ * so this is a weekly occurrence here, not an edge case.
+ *
+ * A zero therefore returns globalRank null and the caller says "unranked".
+ * tiedWith exposes genuine ties above zero so a shared position can be shown
+ * as joint rather than implying it is exclusive.
+ *
+ * Kept byte-identical to the clan bot's copy — the two deliberately duplicate
+ * lib code, and this is the kind of maths that must not disagree between them.
+ */
 export function getPlayerRanking(userId) {
   const row = db.prepare(`SELECT * FROM player_rankings WHERE user_id = ?`).get(String(userId));
   if (!row) return null;
 
-  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings WHERE points > ?`).get(row.points);
-  return { ...row, globalRank: count + 1 };
+  const points = Number(row.points) || 0;
+
+  if (points <= 0) {
+    return { ...row, globalRank: null, tiedWith: 0, ranked: false };
+  }
+
+  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings WHERE points > ?`).get(points);
+  const { tied } = db.prepare(`SELECT COUNT(*) as tied FROM player_rankings WHERE points = ?`).get(points);
+
+  return { ...row, globalRank: count + 1, tiedWith: Math.max(0, tied - 1), ranked: true };
 }
 
 /** Total number of players currently in the rankings table. */

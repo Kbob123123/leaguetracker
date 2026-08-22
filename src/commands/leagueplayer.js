@@ -164,7 +164,13 @@ async function buildDetailedEmbed(match) {
     },
     {
       name: '🌍 Global',
-      value: global ? `**#${global.globalRank.toLocaleString()}**\nof ${scanned.toLocaleString()}` : '—',
+      // An unranked player has no position to show. Printing "#1" for someone
+      // on zero points — which is everyone straight after the Saturday reset —
+      // is the bug this replaced.
+      value: global?.globalRank
+        ? `**#${global.globalRank.toLocaleString()}**${global.tiedWith > 0 ? ' _(joint)_' : ''}\n` +
+          `of ${scanned.toLocaleString()}`
+        : '_Unranked_\n_no points yet_',
       inline: true,
     },
     { name: '📈 Rate', value: formatRate(rate), inline: true },

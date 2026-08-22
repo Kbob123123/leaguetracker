@@ -296,7 +296,9 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
   const memberLines = memberRates
     .map((m, i) => {
       const globalRank = getPlayerRanking(m.userId);
-      const rankTag = globalRank ? ` \`#${globalRank.globalRank}\`` : '';
+      // Only tag a real position. An unranked member (zero points) gets
+      // nothing rather than a literal "#null" next to their name.
+      const rankTag = globalRank?.globalRank ? ` \`#${globalRank.globalRank}\`` : '';
       return `${medals[i] ?? '▫️'} **${formatName(m)}**${rankTag} — ${formatPoints(m.points)} pts  ${trendArrow(m.rate)} ${formatRate(m.rate)}`;
     })
     .join('\n');

@@ -19,6 +19,14 @@
 
 export const CHANGELOG = [
   {
+    version: '1.2.1',
+    date: '2026-08-23',
+    lines: [
+      "**Fixed global ranks showing everyone as #1.** Anyone on zero points now reads as *Unranked* instead of being handed first place — which is what happened to everybody right after the Saturday reset.",
+      'Genuine ties are now labelled as joint, so two players on the same score no longer each look like the outright leader.',
+    ],
+  },
+  {
     version: '1.2.0',
     date: '2026-08-22',
     lines: [
