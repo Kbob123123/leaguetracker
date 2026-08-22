@@ -8,7 +8,7 @@ import {
   hoursToReachRank,
   hoursUntilBattleEnd,
 } from './battleTimer.js';
-import { getPlayerRanking } from './db.js';
+import { rankForPoints } from './db.js';
 import { formatName } from './robloxNames.js';
 
 const COLOR_GAINING = 0x57f287; // green — closing the gap on the league ahead
@@ -295,7 +295,9 @@ export function buildLeagueEmbed({ league, hourAgoSnapshot, latestSnapshot, neig
   const medals = ['🥇', '🥈', '🥉', '🏅'];
   const memberLines = memberRates
     .map((m, i) => {
-      const globalRank = getPlayerRanking(m.userId);
+      // Live points, not the stored row — this board refreshes far more often
+      // than the hourly rankings scan.
+      const globalRank = rankForPoints(m.points);
       // Only tag a real position. An unranked member (zero points) gets
       // nothing rather than a literal "#null" next to their name.
       const rankTag = globalRank?.globalRank ? ` \`#${globalRank.globalRank}\`` : '';

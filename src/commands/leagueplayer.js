@@ -6,7 +6,7 @@ import {
   getPlayerRankingByName,
   getPlayerPointsNear,
   getPlayerPointsHistory,
-  getPlayerRanking,
+  rankForPoints,
   getPlayerRankingsCount,
   getPlayerPercentile,
   getPlayerLeagueBattles,
@@ -116,7 +116,10 @@ async function buildDetailedEmbed(match) {
     if (hourAgo) rate = hourlyRate(hourAgo.points, hourAgo.ts, points, now);
   }
 
-  const global = getPlayerRanking(userId);
+  // Ranked on the LIVE point total, not the row the hourly rebuild stored —
+  // otherwise a player who scored since it ran is ranked on a stale number,
+  // and just after the Saturday reset that stale number is zero.
+  const global = rankForPoints(points);
   const scanned = getPlayerRankingsCount();
   const pct = getPlayerPercentile(points);
 

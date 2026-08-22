@@ -19,6 +19,14 @@
 
 export const CHANGELOG = [
   {
+    version: '1.2.2',
+    date: '2026-08-23',
+    lines: [
+      '**Global ranks now use your live points.** They were read from the hourly scan, so anyone who scored since it last ran was ranked on an out-of-date total — and just after the Saturday reset that total was zero, which showed as Unranked for players who were very much on the board.',
+      'Players who have not scored are no longer counted in the rankings at all, so the "of N" figure means people who have actually scored.',
+    ],
+  },
+  {
     version: '1.2.1',
     date: '2026-08-23',
     lines: [

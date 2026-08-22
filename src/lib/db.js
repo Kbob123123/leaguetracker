@@ -558,17 +558,28 @@ export function replacePlayerRankings(rows) {
 export function getPlayerRanking(userId) {
   const row = db.prepare(`SELECT * FROM player_rankings WHERE user_id = ?`).get(String(userId));
   if (!row) return null;
+  return { ...row, ...rankForPoints(row.points) };
+}
 
-  const points = Number(row.points) || 0;
+/**
+ * Where a point total sits in the scanned population.
+ *
+ * Separated from the stored row so callers can rank a player's LIVE points
+ * rather than whatever the last hourly pass stored — the rebuild runs hourly,
+ * so a player who has scored since it ran would otherwise be ranked on a
+ * stale total, and just after the Saturday reset that stale total is zero.
+ *
+ * Zero is not a rank: nobody is above a zero, so counting "players strictly
+ * above me" makes every zero joint first. Returns null instead.
+ */
+export function rankForPoints(points) {
+  const value = Number(points) || 0;
+  if (value <= 0) return { globalRank: null, tiedWith: 0, ranked: false };
 
-  if (points <= 0) {
-    return { ...row, globalRank: null, tiedWith: 0, ranked: false };
-  }
+  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings WHERE points > ?`).get(value);
+  const { tied } = db.prepare(`SELECT COUNT(*) as tied FROM player_rankings WHERE points = ?`).get(value);
 
-  const { count } = db.prepare(`SELECT COUNT(*) as count FROM player_rankings WHERE points > ?`).get(points);
-  const { tied } = db.prepare(`SELECT COUNT(*) as tied FROM player_rankings WHERE points = ?`).get(points);
-
-  return { ...row, globalRank: count + 1, tiedWith: Math.max(0, tied - 1), ranked: true };
+  return { globalRank: count + 1, tiedWith: Math.max(0, tied - 1), ranked: true };
 }
 
 /** Total number of players currently in the rankings table. */

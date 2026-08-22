@@ -172,15 +172,22 @@ export async function rebuildPlayerRankings() {
     if (!existing || p.points > existing.points) byUserId.set(p.userId, p);
   }
 
-  const rows = Array.from(byUserId.values()).map((p) => ({
-    userId: p.userId,
-    displayName: p.displayName,
-    username: p.username ?? null,
-    points: p.points,
-    leagueId: p.leagueId,
-    leagueName: p.leagueName,
-    leagueRank: p.leagueRank,
-  }));
+  // Players on zero are NOT ranked and do not belong in a rankings table.
+  // League contributions zero at the Saturday reset, so without this the whole
+  // table becomes zeroes every week and the "of N" denominator counts people
+  // who have not scored. History tables above still record them; this only
+  // decides who has a RANK.
+  const rows = Array.from(byUserId.values())
+    .filter((p) => (Number(p.points) || 0) > 0)
+    .map((p) => ({
+      userId: p.userId,
+      displayName: p.displayName,
+      username: p.username ?? null,
+      points: p.points,
+      leagueId: p.leagueId,
+      leagueName: p.leagueName,
+      leagueRank: p.leagueRank,
+    }));
 
   replacePlayerRankings(rows);
   setRankingsMeta('last_rebuilt_at', Math.floor(Date.now() / 1000));
